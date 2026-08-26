@@ -5,7 +5,9 @@
 
 ## 功能
 
-> **侧边栏视图**：安装后活动栏出现「C Workflow」图标，点击展开侧边栏，直接点条目即可触发功能2 / 功能3，无需记忆快捷键。
+> **侧边栏视图**：安装后活动栏出现「C Workflow」图标，点击展开侧边栏，包含两个面板：
+> - **符号搜索**：全局搜索 C/C++ 符号（功能4）
+> - **Git 工作流**：一键触发功能2 / 功能3，无需记忆快捷键
 
 ### 1. 双击选中 C/C++ 条件编译块
 
@@ -18,7 +20,7 @@
     - 双击 `#elif` 行 → 该 `#elif` 到下一个 `#elif` / `#else` 之前
     - 双击 `#else` 行 → `#else` 到 `#endif`
     - 双击 `#endif` 行 → 最后一个 `#elif` / `#else` 到 `#endif` 之前
-  - 再双击 → 切回整个块（循环切换；块内无 `#else`/`#elif` 时分支块即整块，不切换）
+  - 再双击 → 切回整个块（循环切换；块内无 `#else`/`#elif` 时再次双击直接重新选中整块）
 
 **其他触发方式**：命令面板（`Ctrl+Shift+P`）→ `C Workflow: 选中当前条件编译块`（将光标置于指令行上）。
 
@@ -59,6 +61,20 @@ diff_<ref1>_<ref2>.zip
 - 删除（D）：仅存在于「修改前」
 - 修改 / 重命名等：两个目录均保留
 
+### 4. 全局符号搜索
+
+侧边栏「符号搜索」面板：全局搜索工作区中的 C/C++ 符号（函数 / 宏 / 变量 / 结构体 / 枚举），点击结果即可跳转到定义处。
+
+- **多词匹配**：输入多个关键词（以空格分隔），所有词（忽略大小写）均需出现在符号名中，如 `app turn on` 可匹配 `AppPanel_TurnOn` 等
+- **类型筛选**：可切换 全部 / 函数 / 宏 / 变量 / 结构体 / 枚举
+- **三级数据来源**（自动降级）：
+  1. 工作区符号索引（C/C++ 语言服务器，最全）
+  2. 当前文档符号
+  3. 正则扫描（语言服务器不可用时兜底）
+- **触发方式**：活动栏「C Workflow」→「符号搜索」，输入关键词自动搜索（回车立即搜索）；不输入关键词点击「搜索」可列出全部符号
+
+> 说明：完整索引依赖 C/C++ 扩展（`ms-vscode.cpptools`）。搜不到符号时，可运行命令 `C Workflow: 诊断符号搜索`，输出面板会给出语言服务器状态与各级搜索统计，便于排查。
+
 ## 使用前提
 
 - 打开的文件或工作区须位于一个 Git 仓库内。
@@ -71,6 +87,7 @@ diff_<ref1>_<ref2>.zip
 | `c-workflow-tools.selectMacroBlock` | 选中当前条件编译块（#if/#elif/#else） |
 | `c-workflow-tools.gitDifftoolCompare` | Git 对比任意两个节点 |
 | `c-workflow-tools.packageDiff` | 打包两节点间差异文件 |
+| `c-workflow-tools.diagnoseSymbolSearch` | 诊断符号搜索（输出到输出面板） |
 
 ## 架构与扩展
 
@@ -78,13 +95,18 @@ diff_<ref1>_<ref2>.zip
 
 ```
 src/
-├── extension.ts               # 入口：初始化输出通道、注册命令
+├── extension.ts               # 入口：初始化输出通道、注册命令、注册侧边栏视图
 ├── registerCommands.ts        # 命令注册中心（新增功能在此登记命令）
 ├── outputChannel.ts           # 全局输出通道工具
 ├── features/
 │   ├── selectMacroBlock.ts    # 功能1：C 宏块快捷选中
 │   ├── gitDifftool.ts         # 功能2：Git 任意两节点 difftool 对比
-│   └── packageDiff.ts         # 功能3：打包差异文件
+│   ├── packageDiff.ts         # 功能3：打包差异文件
+│   ├── symbolSearch.ts        # 功能4：全局符号搜索（三级来源）
+│   └── symbolSearchDiagnose.ts# 符号搜索诊断命令
+├── views/
+│   ├── symbolSearchView.ts    # 侧边栏「符号搜索」面板（WebviewView）
+│   └── workflowView.ts        # 侧边栏「Git 工作流」面板（TreeView）
 └── utils/
     ├── git.ts                 # Git 命令封装
     └── macros.ts              # C 宏块解析

@@ -32,10 +32,16 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     private view?: vscode.WebviewView;
     private searchToken?: vscode.CancellationTokenSource;
 
+    constructor(private readonly extensionUri: vscode.Uri) {}
+
     resolveWebviewView(webviewView: vscode.WebviewView): void {
         this.view = webviewView;
-        webviewView.webview.options = { enableScripts: true };
-        webviewView.webview.html = this.getHtml();
+        webviewView.webview.options = {
+            enableScripts: true,
+            // 允许 webview 访问 media 目录（codicon 图标字体）
+            localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
+        };
+        webviewView.webview.html = this.getHtml(webviewView.webview);
 
         webviewView.webview.onDidReceiveMessage((msg: WebviewMessage) => {
             switch (msg.type) {
@@ -115,13 +121,82 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         editor.selection = new vscode.Selection(pos, pos);
     }
 
-    private getHtml(): string {
+    private getHtml(webview: vscode.Webview): string {
+        // codicon 图标字体（VS Code 内置大纲图标）
+        const codiconsCss = webview.asWebviewUri(
+            vscode.Uri.joinPath(this.extensionUri, 'media', 'codicons', 'codicon.css')
+        );
+        const cspSource = webview.cspSource;
+        // 界面文案跟随 VS Code UI 语言（zh 中文，其他英文）
+        const zh = vscode.env.language.toLowerCase().startsWith('zh');
+        const I = zh
+            ? {
+                  placeholder: '多词搜索，如 app turn on（匹配函数名含 app/turn/on）',
+                  btnSearch: '搜索',
+                  kindAll: '全部类型',
+                  kindFunction: '函数',
+                  kindMacro: '宏',
+                  kindVariable: '变量',
+                  kindStruct: '结构体',
+                  kindEnum: '枚举',
+                  statusInitial: '输入关键词回车搜索；不输入关键词则列出全部符号',
+                  statusIdle: '输入关键词自动搜索；回车立即搜索；可切换类型筛选',
+                  searching: '搜索中…',
+                  searchingProgress: '搜索中…（',
+                  parenL: '（',
+                  parenR: '）',
+                  srcLabel: '，来源：',
+                  msComma: 'ms，',
+                  srcWorkspace: '工作区索引',
+                  srcDocument: '当前文档',
+                  srcRegex: '正则扫描',
+                  srcNone: '无来源',
+                  notFound: '未找到匹配的符号',
+                  totalPrefix: '共 ',
+                  totalSuffix: ' 个符号',
+                  truncatedPrefix: '（仅显示前 ',
+                  truncatedSuffix: ' 个）',
+                  errorPrefix: '搜索出错：',
+                  emptyHint:
+                      '未找到匹配的符号。\\n请确认：\\n1. 已安装并启用 C/C++ 扩展（ms-vscode.cpptools）\\n2. 工作区已建立符号索引（首次需等待）\\n3. 可运行命令「C Workflow: 诊断符号搜索」查看原因',
+              }
+            : {
+                  placeholder: 'Multi-word search, e.g. app turn on',
+                  btnSearch: 'Search',
+                  kindAll: 'All types',
+                  kindFunction: 'Function',
+                  kindMacro: 'Macro',
+                  kindVariable: 'Variable',
+                  kindStruct: 'Struct',
+                  kindEnum: 'Enum',
+                  statusInitial: 'Type keywords and press Enter to search; empty lists all symbols',
+                  statusIdle: 'Auto-search as you type; Enter to search now; switch type to filter',
+                  searching: 'Searching…',
+                  searchingProgress: 'Searching… (',
+                  parenL: ' (',
+                  parenR: ')',
+                  srcLabel: ', source: ',
+                  msComma: 'ms, ',
+                  srcWorkspace: 'Workspace index',
+                  srcDocument: 'Current document',
+                  srcRegex: 'Regex scan',
+                  srcNone: 'None',
+                  notFound: 'No matching symbols',
+                  totalPrefix: '',
+                  totalSuffix: ' symbols',
+                  truncatedPrefix: ' (showing first ',
+                  truncatedSuffix: ')',
+                  errorPrefix: 'Search error: ',
+                  emptyHint:
+                      'No matching symbols found.\\nPlease check:\\n1. C/C++ extension (ms-vscode.cpptools) is installed and enabled\\n2. Workspace symbol index is built (first time may take a while)\\n3. Run command "C Workflow: Diagnose Symbol Search" for details',
+              };
         return /* html */ `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${zh ? 'zh-CN' : 'en'}">
 <head>
 <meta charset="UTF-8" />
 <!-- CSP 必须显式声明，否则 VS Code 默认 CSP 会拦截内联脚本导致面板无响应 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; font-src ${cspSource}; script-src 'unsafe-inline'; img-src ${cspSource} data:;" />
+<link rel="stylesheet" href="${codiconsCss}" />
 <style>
     body {
         margin: 0;
@@ -160,14 +235,74 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     #btn:hover {
         background: var(--vscode-button-hoverBackground);
     }
-    select#kind {
+    /* 自定义下拉（原生 select 弹窗无法加动画，改为 div 模拟） */
+    .dropdown {
+        position: relative;
         flex: 1;
+    }
+    .dropdown-toggle {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
         padding: 3px 6px;
         border: 1px solid var(--vscode-input-border, transparent);
         border-radius: 2px;
         background: var(--vscode-input-background);
         color: var(--vscode-input-foreground);
-        outline: none;
+        font: inherit;
+        font-size: inherit;
+        cursor: pointer;
+    }
+    .dropdown-toggle:focus-visible {
+        outline: 1px solid var(--vscode-focusBorder);
+        outline-offset: -1px;
+    }
+    .dropdown-arrow {
+        font-size: 12px;
+        transition: transform 150ms ease;
+    }
+    .dropdown.open .dropdown-arrow {
+        transform: rotate(180deg);
+    }
+    .dropdown-menu {
+        position: absolute;
+        top: calc(100% + 2px);
+        left: 0;
+        right: 0;
+        z-index: 10;
+        margin: 0;
+        padding: 2px 0;
+        list-style: none;
+        background: var(--vscode-dropdown-background, var(--vscode-input-background));
+        border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border, transparent));
+        border-radius: 3px;
+        box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+        opacity: 0;
+        transform: translateY(-4px);
+        visibility: hidden;
+        transition: opacity 120ms ease, transform 120ms ease, visibility 120ms;
+    }
+    .dropdown.open .dropdown-menu {
+        opacity: 1;
+        transform: translateY(0);
+        visibility: visible;
+        transition: opacity 140ms ease, transform 140ms ease;
+    }
+    .dropdown-menu li {
+        padding: 3px 10px;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .dropdown-menu li:hover {
+        background: var(--vscode-list-hoverBackground);
+    }
+    .dropdown-menu li.selected {
+        background: var(--vscode-list-activeSelectionBackground, transparent);
+        color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
     }
     #status {
         margin: 2px 0 6px 0;
@@ -192,14 +327,17 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     .result-item:hover {
         background: var(--vscode-list-hoverBackground);
     }
-    .kind-badge {
+    /* 符号类型图标：与 VS Code 大纲视图一致（codicon + 主题 symbolIcon 颜色） */
+    .kind-icon {
         flex-shrink: 0;
-        font-size: 10px;
-        padding: 0 4px;
-        border-radius: 3px;
-        border: 1px solid currentColor;
-        opacity: 0.9;
+        font-size: 15px;
+        line-height: 1;
     }
+    .kind-icon.k-function { color: var(--vscode-symbolIcon-functionForeground); }
+    .kind-icon.k-macro { color: var(--vscode-symbolIcon-keywordForeground); }
+    .kind-icon.k-variable { color: var(--vscode-symbolIcon-variableForeground); }
+    .kind-icon.k-struct { color: var(--vscode-symbolIcon-structForeground); }
+    .kind-icon.k-enum { color: var(--vscode-symbolIcon-enumForeground); }
     .name {
         font-weight: 600;
         overflow: hidden;
@@ -215,20 +353,26 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
     <div class="search-row">
-        <input id="keyword" type="text" placeholder="多词搜索，如 app turn on（匹配函数名含 app/turn/on）" spellcheck="false" />
-        <button id="btn">搜索</button>
+        <input id="keyword" type="text" placeholder="${I.placeholder}" spellcheck="false" />
+        <button id="btn">${I.btnSearch}</button>
     </div>
     <div class="search-row">
-        <select id="kind">
-            <option value="all">全部类型</option>
-            <option value="function">函数</option>
-            <option value="macro">宏</option>
-            <option value="variable">变量</option>
-            <option value="struct">结构体</option>
-            <option value="enum">枚举</option>
-        </select>
+        <div class="dropdown" id="kindDropdown">
+            <button type="button" class="dropdown-toggle" id="kindToggle">
+                <span id="kindLabel">${I.kindAll}</span>
+                <i class="codicon codicon-chevron-down dropdown-arrow"></i>
+            </button>
+            <ul class="dropdown-menu" id="kindMenu">
+                <li data-value="all">${I.kindAll}</li>
+                <li data-value="function">${I.kindFunction}</li>
+                <li data-value="macro">${I.kindMacro}</li>
+                <li data-value="variable">${I.kindVariable}</li>
+                <li data-value="struct">${I.kindStruct}</li>
+                <li data-value="enum">${I.kindEnum}</li>
+            </ul>
+        </div>
     </div>
-    <div id="status">输入关键词回车搜索；不输入关键词则列出全部符号</div>
+    <div id="status">${I.statusInitial}</div>
     <div id="results"></div>
 
 <script>
@@ -238,18 +382,19 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         try { vscode.postMessage({ type: 'error', message: 'webview 脚本错误: ' + (e.message || 'unknown') }); } catch (_) { }
     });
     const input = document.getElementById('keyword');
-    const kindEl = document.getElementById('kind');
     const btn = document.getElementById('btn');
     const statusEl = document.getElementById('status');
     const resultsEl = document.getElementById('results');
+    // 当前类型筛选值（自定义下拉）
+    let currentKind = 'all';
 
-    const KIND_LABEL = { function: '函数', macro: '宏', variable: '变量', struct: '结构体', enum: '枚举' };
-    const KIND_COLOR = { function: '#4fc1ff', macro: '#d19a66', variable: '#98c379', struct: '#e5c07b', enum: '#61afef' };
+    // VS Code 内置大纲图标（codicon 符号系列）
+    const KIND_ICON = { function: 'symbol-function', macro: 'symbol-keyword', variable: 'symbol-variable', struct: 'symbol-struct', enum: 'symbol-enum' };
 
     let debounceTimer = null;
 
     function resetStatus() {
-        statusEl.textContent = '输入关键词自动搜索；回车立即搜索；可切换类型筛选';
+        statusEl.textContent = '${I.statusIdle}';
     }
 
     function doSearch() {
@@ -257,8 +402,8 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
             clearTimeout(debounceTimer);
             debounceTimer = null;
         }
-        vscode.postMessage({ type: 'search', keyword: input.value, symbolType: kindEl.value });
-        statusEl.textContent = '搜索中…';
+        vscode.postMessage({ type: 'search', keyword: input.value, symbolType: currentKind });
+        statusEl.textContent = '${I.searching}';
     }
 
     btn.addEventListener('click', doSearch);
@@ -283,42 +428,84 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         }
         debounceTimer = setTimeout(doSearch, ${DEBOUNCE_MS});
     });
-    kindEl.addEventListener('change', () => {
+    // 自定义下拉：类型筛选（带展开/收起动画）
+    const kindDropdown = document.getElementById('kindDropdown');
+    const kindToggle = document.getElementById('kindToggle');
+    const kindLabel = document.getElementById('kindLabel');
+    const kindMenu = document.getElementById('kindMenu');
+    const KIND_LABEL = {
+        all: '${I.kindAll}',
+        function: '${I.kindFunction}',
+        macro: '${I.kindMacro}',
+        variable: '${I.kindVariable}',
+        struct: '${I.kindStruct}',
+        enum: '${I.kindEnum}',
+    };
+
+    function setKind(value) {
+        currentKind = value;
+        kindLabel.textContent = KIND_LABEL[value] || value;
+        kindMenu.querySelectorAll('li').forEach((li) => {
+            li.classList.toggle('selected', li.dataset.value === value);
+        });
         // 切换类型：有关键词立即重搜，否则仅提示
         if (input.value.trim()) {
             doSearch();
         }
+    }
+
+    kindToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        kindDropdown.classList.toggle('open');
+    });
+    kindMenu.addEventListener('click', (e) => {
+        const li = e.target.closest('li');
+        if (!li) {
+            return;
+        }
+        setKind(li.dataset.value);
+        kindDropdown.classList.remove('open');
+    });
+    document.addEventListener('click', (e) => {
+        if (!kindDropdown.contains(e.target)) {
+            kindDropdown.classList.remove('open');
+        }
+    });
+    kindToggle.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            kindDropdown.classList.remove('open');
+        }
     });
 
-    const SOURCE_LABEL = { workspace: '工作区索引', document: '当前文档', regex: '正则扫描', none: '无来源' };
+    const SOURCE_LABEL = { workspace: '${I.srcWorkspace}', document: '${I.srcDocument}', regex: '${I.srcRegex}', none: '${I.srcNone}' };
 
     function render(msg) {
         const results = msg.results;
         resultsEl.innerHTML = '';
         if (results.length === 0) {
-            statusEl.textContent = '未找到匹配的符号（' + (msg.elapsed != null ? msg.elapsed + 'ms，' : '') +
-                '来源：' + SOURCE_LABEL[msg.source] + '）';
+            statusEl.textContent = '${I.notFound}' + '${I.parenL}' +
+                (msg.elapsed != null ? msg.elapsed + '${I.msComma}' : '') +
+                '${I.srcLabel}' + SOURCE_LABEL[msg.source] + '${I.parenR}';
             const empty = document.createElement('div');
             empty.className = 'empty';
-            empty.textContent = '未找到匹配的符号。\\n请确认：\\n1. 已安装并启用 C/C++ 扩展（ms-vscode.cpptools）\\n2. 工作区已建立符号索引（首次需等待）\\n3. 可运行命令「C Workflow: 诊断符号搜索」查看原因';
+            empty.textContent = '${I.emptyHint}';
             empty.style.whiteSpace = 'pre-line';
             resultsEl.appendChild(empty);
             return;
         }
         const source = SOURCE_LABEL[msg.source] || msg.source;
         statusEl.textContent =
-            '共 ' + msg.total + ' 个符号' +
-            (msg.truncated ? '（仅显示前 ' + results.length + ' 个）' : '') +
-            '（' + msg.elapsed + 'ms，来源：' + source + '）';
+            '${I.totalPrefix}' + msg.total + '${I.totalSuffix}' +
+            (msg.truncated ? '${I.truncatedPrefix}' + results.length + '${I.truncatedSuffix}' : '') +
+            '${I.parenL}' + msg.elapsed + 'ms' + '${I.srcLabel}' + source + '${I.parenR}';
         for (const r of results) {
             const item = document.createElement('div');
             item.className = 'result-item';
 
-            const badge = document.createElement('span');
-            badge.className = 'kind-badge';
-            badge.textContent = KIND_LABEL[r.kind] || r.kind;
-            badge.style.color = KIND_COLOR[r.kind] || '';
-            item.appendChild(badge);
+            // 类型标记：VS Code 内置大纲图标（codicon），颜色随主题
+            const icon = document.createElement('i');
+            icon.className = 'codicon codicon-' + (KIND_ICON[r.kind] || 'symbol-method') + ' kind-icon k-' + r.kind;
+            item.appendChild(icon);
 
             const name = document.createElement('span');
             name.className = 'name';
@@ -335,13 +522,13 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     window.addEventListener('message', (e) => {
         const msg = e.data;
         if (msg.type === 'searching') {
-            statusEl.textContent = '搜索中…';
+            statusEl.textContent = '${I.searching}';
         } else if (msg.type === 'progress') {
-            statusEl.textContent = '搜索中…（' + msg.scanned + '/' + msg.total + '）';
+            statusEl.textContent = '${I.searchingProgress}' + msg.scanned + '/' + msg.total + '${I.parenR}';
         } else if (msg.type === 'results') {
             render(msg);
         } else if (msg.type === 'error') {
-            statusEl.textContent = '搜索出错：' + msg.message;
+            statusEl.textContent = '${I.errorPrefix}' + msg.message;
             resultsEl.innerHTML = '';
         }
     });
@@ -357,7 +544,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
  * 注册活动栏侧边栏「符号搜索」视图。
  */
 export function registerSymbolSearchView(context: vscode.ExtensionContext): void {
-    const provider = new SymbolSearchViewProvider();
+    const provider = new SymbolSearchViewProvider(context.extensionUri);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SymbolSearchViewProvider.viewType, provider, {
             webviewOptions: { retainContextWhenHidden: true },

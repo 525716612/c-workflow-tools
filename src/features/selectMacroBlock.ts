@@ -251,12 +251,16 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
                     return;
                 }
                 // 块内无 #elif/#else 结构，分支即整块，无可切换。
-                // 刷新时间戳：让 3 秒窗口从本次双击重新计时，避免窗口悬挂
-                // 导致总时长超过阈值后的双击被误判为"首次"而重复选中（假循环）。
-                if (lastState) {
-                    lastState.updateTime = now;
-                }
-                log(`[双击] 块内无 #elif/#else，无可切换`);
+                // 直接重新选中整块：否则选区停留在 #if 单词上，
+                // 反复双击将只有第一次能选中区块。
+                selectRange(editor, lines, whole.startLine, whole.endLine);
+                lastState = {
+                    startLine: whole.startLine,
+                    endLine: whole.endLine,
+                    mode: 'whole',
+                    updateTime: now,
+                };
+                log(`[双击] 无 #elif/#else 分支，重新选中整块（行 ${whole.startLine + 1} - ${whole.endLine + 1}）`);
                 return;
             }
 

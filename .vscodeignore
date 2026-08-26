@@ -15,3 +15,5 @@ tsconfig.json
 .vsixmanifest
 .codebuddy/**
 test-apppanel-debug.js
+temp_vsix_check.zip
+vsix_check/

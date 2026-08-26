@@ -1,9 +1,9 @@
 {
   "name": "c-workflow-tools",
   "displayName": "C Workflow Tools",
-  "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
+  "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、全局符号搜索、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
   "publisher": "cxy",
-  "version": "0.0.1",
+  "version": "0.0.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,7 +23,9 @@
     "git",
     "difftool",
     "diff",
-    "package"
+    "package",
+    "symbol",
+    "search"
   ],
   "icon": "media/icon.png",
   "galleryBanner": {
