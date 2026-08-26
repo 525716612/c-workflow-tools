@@ -5,6 +5,7 @@ out/**
 node_modules/**
 .git/**
 .gitignore
+DEVELOPMENT.md
 esbuild.js
 eslint.config.mjs
 jsconfig.json
