@@ -1,0 +1,17 @@
+.vscode/**
+.vscode-test/**
+src/**
+out/**
+node_modules/**
+.git/**
+.gitignore
+esbuild.js
+eslint.config.mjs
+jsconfig.json
+tsconfig.json
+**/*.vsix
+**/*.map
+**/test/**
+.vsixmanifest
+.codebuddy/**
+test-apppanel-debug.js

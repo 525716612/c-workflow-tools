@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+*.vsix
+*.log
+
+# 临时调试/检查产物
+test-apppanel-debug.js
+vsix_check/
+temp_vsix_check.zip
