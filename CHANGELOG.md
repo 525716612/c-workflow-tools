@@ -2,6 +2,13 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.5] - 2026-08-27
+
+### Fixed
+
+- 修复：快速拖选 `#endif` 等指令词到 `#` 仍会误触发双击选中整块（通过「空选区→空选区→选中单词」的双击前奏识别区分快速拖选）
+- 修复：双击位置检测误拦截 `#` 不作为单词字符的选区（如双击 `#endif` 实际选中的是 `endif`），保证双击指令词选整块功能正常
+
 ## [0.0.4] - 2026-08-27
 
 ### Fixed

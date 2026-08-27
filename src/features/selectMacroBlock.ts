@@ -13,6 +13,12 @@ const STATE_TIMEOUT_MS = 3000;
 /** 判定相邻选区事件属于同一拖选过程的时间上限（毫秒）：缓慢拖选中途的停顿间隔 */
 const DRAG_EVENT_WINDOW_MS = 2000;
 
+/** 判定双击选词两次点击的间隔上限（毫秒）：与系统双击速度一致 */
+const DOUBLE_CLICK_MS = 500;
+
+/** 双击两次点击允许的位置偏差（字符）：双击连点位置基本相同 */
+const DOUBLE_CLICK_POS_TOLERANCE = 5;
+
 /** 条件编译块选中模式：whole=整块（#if→#endif），branch=分支块（某个分支指令到下一个分支指令之前） */
 type SelectMode = 'whole' | 'branch';
 
@@ -28,6 +34,8 @@ interface DoubleClickState {
 interface SelectionChangeSnapshot {
     editor: vscode.TextEditor;
     selection: vscode.Selection;
+    /** 选择变化来源：鼠标/键盘/命令（命令触发可能为 undefined） */
+    kind: vscode.TextEditorSelectionChangeKind | undefined;
     time: number;
 }
 
@@ -58,6 +66,32 @@ function isDragContinuation(prev: SelectionChangeSnapshot, editor: vscode.TextEd
     const cEnd = Math.max(cur.start.character, cur.end.character);
     // 两次选区有重叠 → 同一拖选过程的中间态
     return pEnd >= cStart && cEnd >= pStart;
+}
+
+/**
+ * 判断上一条、上上条事件是否构成"双击选词的前奏"（两次位置接近的空选区鼠标点击）。
+ *
+ * 双击选词的完整事件序列为：第一次点击（空选区）→ 第二次按下（空选区）→ 抬起选中单词；
+ * 而快速拖选（拖速快、中间态事件被 VS Code 合并）只有"按下（空选区）→ 直接扩展到完整选区"，
+ * 缺少第二次空选区点击。据此区分二者，避免快速拖选误触发双击选中整块。
+ */
+function isDoubleClickWordSequence(prev: SelectionChangeSnapshot, prevPrev: SelectionChangeSnapshot | undefined, now: number): boolean {
+    // 上一条必须是"鼠标按下的空选区"（双击的第二次按下；拖选的按下也符合，继续往下区分）
+    if (prev.kind !== vscode.TextEditorSelectionChangeKind.Mouse || !prev.selection.isEmpty) {
+        return false;
+    }
+    // 上上条必须是"鼠标点击的空选区"（双击的第一次点击）
+    if (!prevPrev || prevPrev.kind !== vscode.TextEditorSelectionChangeKind.Mouse || !prevPrev.selection.isEmpty) {
+        return false;
+    }
+    // 两次点击间隔必须在系统双击速度内
+    if (now - prev.time > DOUBLE_CLICK_MS || now - prevPrev.time > DOUBLE_CLICK_MS) {
+        return false;
+    }
+    // 双击连点位置基本相同（几乎不动鼠标）；拖选前的单击点通常与按下点不同
+    const a = prev.selection.active;
+    const b = prevPrev.selection.active;
+    return a.line === b.line && Math.abs(a.character - b.character) <= DOUBLE_CLICK_POS_TOLERANCE;
 }
 
 /**
@@ -175,6 +209,10 @@ export async function selectMacroBlock(): Promise<void> {
 export function registerDoubleClickMacroSelection(context: vscode.ExtensionContext): void {
     let lastState: DoubleClickState | undefined;
     let lastChange: SelectionChangeSnapshot | undefined;
+    /** 上上条选择事件快照（用于识别双击选词的"空选区→空选区"前奏） */
+    let prevPrevChange: SelectionChangeSnapshot | undefined;
+    /** 拖选中间态提示：本行最近出现过"仅选中指令词本体（不含 #）"的选区，可能是拖选过程的中间状态 */
+    let dragHint: { line: number; time: number } | undefined;
 
     context.subscriptions.push(
         vscode.window.onDidChangeTextEditorSelection((e) => {
@@ -186,13 +224,16 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             const now = Date.now();
             // 记录本次选择变化快照，供下一次事件判断是否为同一拖选过程的中间态
             const prevChange = lastChange;
-            lastChange = { editor, selection, time: now };
+            prevPrevChange = prevChange;
+            lastChange = { editor, selection, kind: e.kind, time: now };
             // 单击（空选区）：仅移动光标，不处理。
             // 但如果光标不在条件指令词上（例如点击其他位置取消选中），
             // 清除上次双击状态，使后续双击重新视为"首次"（重新选中整块）。
             // 注意：双击自身的第一次点击（光标落在指令词上）会保留状态，
             // 保证"整块→分支→整块"的原地切换仍能正常触发。
             if (selection.isEmpty) {
+                // 鼠标按下/单击产生新光标：上一轮拖选已结束，清空拖选中间态提示
+                dragHint = undefined;
                 const clickLine = editor.document.lineAt(selection.active.line).text;
                 const d = extractDirectiveRange(clickLine);
                 const ch = selection.active.character;
@@ -240,13 +281,25 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
                 log(`[三击] 放行默认选行`);
                 return;
             }
-            // 双击位置必须落在指令词上（含 # 符号）：
-            // 双击条件表达式中的标识符（如 ENABLE_EXT_DEVICE_LG_OLED）保持 VS Code 默认选词
+            // 双击位置允许两类选区：
+            // 1) 覆盖 # 指令符号（如 #endif 整体 [0,5)）
+            // 2) 恰为完整指令词本体（如双击选中的 endif [1,5)——C/C++ 语言配置中
+            //    # 不属于单词字符，双击 #endif 选中的是 endif，不含 #）
+            // 其余（部分词选区、仅选中 # 等）按"普通选词"拦截，不触发块选中；
+            // 双击条件表达式中的标识符（如 ENABLE_EXT_DEVICE_LG_OLED）同理不触发。
             const selStart = selection.start.character;
             const selEnd = selection.end.character;
-            if (!(selEnd > 0 && selStart < directive.end)) {
-                log(`[双击拦截] 未落在指令词上`);
+            const hashPos = lineText.indexOf('#');
+            const coverHash = selEnd > hashPos && selStart <= hashPos;
+            const fullDirectiveWord = selStart >= directive.start && selEnd <= directive.end;
+            if (!coverHash && !fullDirectiveWord) {
+                log(`[双击拦截] 普通选词（未覆盖 # 且非完整指令词）`);
                 lastState = undefined;
+                // 选区落在指令词范围内但非完整词（如从 #endif 的 f 往回拖选的部分中间态）：
+                // 记录提示供后续选区兜底放行
+                if (selStart >= directive.start && selEnd <= directive.end) {
+                    dragHint = { line: activeLine, time: now };
+                }
                 return;
             }
             // 单词选区校验（双击选词特征，尽力排除拖选）：
@@ -264,13 +317,42 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             }
             // 光标不在单词上（如双击分隔符 # 时的边缘情况）：不拦截，交由指令词位置判定兜底
 
-            // 拖选检测：按住左键缓慢选中 #if 等指令词时，选区会先经历"部分单词"
+            // 快速拖选检测：拖速快时 VS Code 会合并/跳过中间态事件，事件序列退化为
+            // "按下（空选区）→ 直接扩展到完整选区"，与双击（空选区→空选区→选中单词）
+            // 相比缺少第二次空选区点击（isDoubleClickWordSequence 判定失败即拦截）。
+            if (
+                prevChange &&
+                prevChange.kind === vscode.TextEditorSelectionChangeKind.Mouse &&
+                prevChange.selection.isEmpty &&
+                now - prevChange.time < DRAG_EVENT_WINDOW_MS &&
+                !isDoubleClickWordSequence(prevChange, prevPrevChange, now)
+            ) {
+                log(`[双击拦截] 快速拖选（按下后直接扩展选区）`);
+                lastState = undefined;
+                dragHint = undefined;
+                return;
+            }
+            // 缓慢拖选检测：按住左键缓慢选中 #if 等指令词时，选区会先经历"部分单词"
             // 中间态再扩展为完整单词；双击选词则是空选区直接跳变为完整单词选区。
             // 据此区分，避免缓慢拖选误触发双击选中整块。
             if (prevChange && isDragContinuation(prevChange, editor, selection, now - prevChange.time)) {
                 log(`[双击拦截] 拖选过程（锚点不变、选区重叠）`);
                 lastState = undefined;
+                dragHint = undefined;
                 return;
+            }
+            // 兜底：本行短时间内选中过"指令词本体"（如 endif，不含 #）选区——
+            // 这是从指令词内部往回拖选的中间态特征（如缓慢从 #endif 的 f 拖到 #）。
+            // 此时即使本次选区恰好等于完整单词、无法凭选区本身与双击区分，也放行。
+            if (dragHint) {
+                if (dragHint.line === activeLine && now - dragHint.time < DRAG_EVENT_WINDOW_MS) {
+                    log(`[双击拦截] 拖选扩展（指令词中间态提示）`);
+                    lastState = undefined;
+                    dragHint = undefined;
+                    return;
+                }
+                // 提示过期或属于其他行，不再有用
+                dragHint = undefined;
             }
 
             const lines = editor.document.getText().split(/\r?\n/);
