@@ -2,6 +2,12 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.4] - 2026-08-27
+
+### Fixed
+
+- 修复：按住鼠标左键缓慢拖选 `#if` 等指令词时会误触发双击选中整块（通过相邻选择事件快照识别「锚点不变、同行、选区重叠」的拖选中间态并放行）
+
 ## [0.0.3] - 2026-08-26
 
 ### Fixed

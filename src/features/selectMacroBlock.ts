@@ -10,6 +10,9 @@ import { log, logError } from '../outputChannel';
 /** 双击切换状态有效时间窗（毫秒）：同一块在窗口内再次双击才切换分支/整块 */
 const STATE_TIMEOUT_MS = 3000;
 
+/** 判定相邻选区事件属于同一拖选过程的时间上限（毫秒）：缓慢拖选中途的停顿间隔 */
+const DRAG_EVENT_WINDOW_MS = 2000;
+
 /** 条件编译块选中模式：whole=整块（#if→#endif），branch=分支块（某个分支指令到下一个分支指令之前） */
 type SelectMode = 'whole' | 'branch';
 
@@ -19,6 +22,42 @@ interface DoubleClickState {
     endLine: number;
     mode: SelectMode;
     updateTime: number;
+}
+
+/** 最近一次选择变化事件的快照（用于区分双击选词与拖选） */
+interface SelectionChangeSnapshot {
+    editor: vscode.TextEditor;
+    selection: vscode.Selection;
+    time: number;
+}
+
+/**
+ * 判断相邻两次选择事件是否属于同一拖选过程（如按住左键缓慢选中 #if）。
+ *
+ * 拖选的特征：锚点（鼠标按下位置）保持不变、选区在同一行内连续扩展、
+ * 且与上一次选区重叠（锚点一侧始终包含在选区内）；
+ * 而双击选词是"空选区 → 完整单词"的一次性跳变，不满足这些条件。
+ * 双击切换分支时上一次是本扩展设置的跨行整块选区，也会被同行条件排除。
+ */
+function isDragContinuation(prev: SelectionChangeSnapshot, editor: vscode.TextEditor, cur: vscode.Selection, intervalMs: number): boolean {
+    if (intervalMs > DRAG_EVENT_WINDOW_MS || prev.editor !== editor || prev.selection.isEmpty) {
+        return false;
+    }
+    const p = prev.selection;
+    // 拖选锚点固定（鼠标按下位置不变）；双击产生的新选区锚点是单词端点，与上次不同
+    if (!p.anchor.isEqual(cur.anchor)) {
+        return false;
+    }
+    // 拖选在同一行内进行；跨行选区（如整块）不属于拖选中间态
+    if (p.start.line !== cur.start.line || p.end.line !== cur.end.line) {
+        return false;
+    }
+    const pStart = Math.min(p.start.character, p.end.character);
+    const pEnd = Math.max(p.start.character, p.end.character);
+    const cStart = Math.min(cur.start.character, cur.end.character);
+    const cEnd = Math.max(cur.start.character, cur.end.character);
+    // 两次选区有重叠 → 同一拖选过程的中间态
+    return pEnd >= cStart && cEnd >= pStart;
 }
 
 /**
@@ -135,6 +174,7 @@ export async function selectMacroBlock(): Promise<void> {
  */
 export function registerDoubleClickMacroSelection(context: vscode.ExtensionContext): void {
     let lastState: DoubleClickState | undefined;
+    let lastChange: SelectionChangeSnapshot | undefined;
 
     context.subscriptions.push(
         vscode.window.onDidChangeTextEditorSelection((e) => {
@@ -143,6 +183,10 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             if (!selection) {
                 return;
             }
+            const now = Date.now();
+            // 记录本次选择变化快照，供下一次事件判断是否为同一拖选过程的中间态
+            const prevChange = lastChange;
+            lastChange = { editor, selection, time: now };
             // 单击（空选区）：仅移动光标，不处理。
             // 但如果光标不在条件指令词上（例如点击其他位置取消选中），
             // 清除上次双击状态，使后续双击重新视为"首次"（重新选中整块）。
@@ -179,7 +223,6 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             if (selection.start.character === 0 && selection.end.character >= lineText.length) {
                 const lines = editor.document.getText().split(/\r?\n/);
                 const w = locateMacroBlock(lines, activeLine);
-                const now = Date.now();
                 // 若是紧跟双击后的三击（3 秒内、同一块），保持整块选中，不切换到分支
                 if (lastState && w && lastState.startLine === w.startLine && now - lastState.updateTime < STATE_TIMEOUT_MS) {
                     selectRange(editor, lines, w.startLine, w.endLine);
@@ -221,6 +264,15 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             }
             // 光标不在单词上（如双击分隔符 # 时的边缘情况）：不拦截，交由指令词位置判定兜底
 
+            // 拖选检测：按住左键缓慢选中 #if 等指令词时，选区会先经历"部分单词"
+            // 中间态再扩展为完整单词；双击选词则是空选区直接跳变为完整单词选区。
+            // 据此区分，避免缓慢拖选误触发双击选中整块。
+            if (prevChange && isDragContinuation(prevChange, editor, selection, now - prevChange.time)) {
+                log(`[双击拦截] 拖选过程（锚点不变、选区重叠）`);
+                lastState = undefined;
+                return;
+            }
+
             const lines = editor.document.getText().split(/\r?\n/);
             const whole = locateMacroBlock(lines, activeLine);
             if (!whole) {
@@ -229,7 +281,6 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
                 return;
             }
             const branch = getBranchRange(lines, whole, activeLine);
-            const now = Date.now();
 
             // 3 秒内再次双击同一块：整块 → 切换为当前双击行所在的分支
             if (
