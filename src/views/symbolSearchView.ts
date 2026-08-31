@@ -338,10 +338,23 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     .kind-icon.k-variable { color: var(--vscode-symbolIcon-variableForeground); }
     .kind-icon.k-struct { color: var(--vscode-symbolIcon-structForeground); }
     .kind-icon.k-enum { color: var(--vscode-symbolIcon-enumForeground); }
+    /* 符号名：必须完整显示，不收缩不省略 */
     .name {
+        flex: 0 0 auto;
         font-weight: 600;
+        white-space: nowrap;
+    }
+    /* 路径：右对齐显示；空间不足时保留尾部（前面省略号），随侧边栏宽度自适应 */
+    .file {
+        flex: 1 1 auto;
+        min-width: 0;
         overflow: hidden;
+        white-space: nowrap;
         text-overflow: ellipsis;
+        direction: rtl;
+        text-align: right;
+        color: var(--vscode-descriptionForeground);
+        font-size: 11px;
     }
     .empty {
         padding: 12px 4px;
@@ -511,6 +524,13 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
             name.className = 'name';
             name.textContent = r.detail ? r.detail + '::' + r.name : r.name;
             item.appendChild(name);
+
+            // 路径：右对齐，宽度不足时省略前面保留尾部（…/xxx.ts）
+            const file = document.createElement('span');
+            file.className = 'file';
+            file.textContent = r.file;
+            file.title = r.file;
+            item.appendChild(file);
 
             item.addEventListener('click', () => {
                 vscode.postMessage({ type: 'open', file: r.file, line: r.line });

@@ -2,6 +2,16 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.6] - 2026-08-31
+
+### Added
+
+- 符号搜索：结果项显示符号所在文件路径（右对齐，宽度不足时省略前面保留尾部，随侧边栏宽度自适应）
+
+### Fixed
+
+- 修复：符号搜索结果项在侧边栏较窄时符号名被省略，现在符号名始终完整显示，仅路径可省略
+
 ## [0.0.5] - 2026-08-27
 
 ### Fixed
