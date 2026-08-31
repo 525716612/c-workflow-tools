@@ -40,6 +40,15 @@ const DEFAULT_EXCLUDE = '**/{node_modules,.git,out,dist,build}/**';
 const MAX_RESULTS = 5000;
 /** 扫描文件数上限 */
 const MAX_FILES = 20000;
+/**
+ * 工作区符号搜索（#）最短查询词长度。
+ * 过短查询（如单字符）会触发语言服务器对全索引做模糊匹配，返回海量符号，
+ * 内存压力大，是压垮 cpptools 的高危操作（VS Code 内置 # 搜索即强制至少 3 字符）。
+ * 不足长度时跳过一级，降级到二级 document / 三级 regex。
+ */
+const MIN_WS_QUERY_LEN = 2;
+/** 单次工作区符号搜索超时（ms）：语言服务器卡住时不无限等待 */
+const WS_SEARCH_TIMEOUT_MS = 15000;
 
 /* ------------------------------------------------------------------ */
 /* 语言服务器（ms-vscode.cpptools 等）SymbolKind -> 类别映射            */
@@ -325,6 +334,89 @@ function extractWorkspaceQuery(keyword: string): string {
     return trimmed.split(/\s+/)[0] ?? '';
 }
 
+/** withTimeout 超时哨兵值 */
+const TIMEOUT_SYMBOL = Symbol('ws-search-timeout');
+
+/**
+ * 给 Promise 加超时；超时返回 TIMEOUT_SYMBOL（调用方据此放弃等待）。
+ * @param p 原始 Promise（ProviderResult 可能是同步值或 thenable）
+ * @param ms 超时毫秒数
+ */
+function withTimeout<T>(p: vscode.ProviderResult<T>, ms: number): Promise<T | typeof TIMEOUT_SYMBOL> {
+    return new Promise<T | typeof TIMEOUT_SYMBOL>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(TIMEOUT_SYMBOL), ms);
+        Promise.resolve(p).then(
+            (v) => {
+                clearTimeout(timer);
+                resolve(v);
+            },
+            (err) => {
+                clearTimeout(timer);
+                reject(err);
+            }
+        );
+    });
+}
+
+/**
+ * 一级：工作区符号搜索（#）。
+ *
+ * 重要：不使用 vscode.commands.executeCommand('vscode.executeWorkspaceSymbolProvider', query)。
+ * 该命令不接受 CancellationToken，取消令牌对它无效；输入防抖期间连续触发搜索时，
+ * 已发出的请求无法终止，会在语言服务器端堆积（尤其短查询触发全索引模糊匹配），
+ * 可能把 cpptools 等服务器进程压垮。
+ *
+ * 改为直接调用 vscode.languages.getWorkspaceSymbolProviders() 返回的 provider：
+ *   - token 可真正传给语言服务器，取消时经 LSP $/cancelRequest 通知服务器终止搜索；
+ *   - 查询词过短（< MIN_WS_QUERY_LEN）时跳过，避免全索引匹配风暴；
+ *   - 单次搜索有整体超时兜底，服务器卡死时不无限等待。
+ *
+ * @param query 查询词（已按单个关键词提取）
+ * @param token 取消令牌
+ * @returns infos 已取回的结果；timedOut 是否超时；skipped 是否因查询词过短而跳过
+ */
+export async function searchWorkspaceSymbols(
+    query: string,
+    token: vscode.CancellationToken
+): Promise<{ infos: vscode.SymbolInformation[]; timedOut: boolean; skipped: boolean }> {
+    if (query.length < MIN_WS_QUERY_LEN) {
+        return { infos: [], timedOut: false, skipped: true };
+    }
+    const providers = vscode.languages.getWorkspaceSymbolProviders();
+    if (providers.length === 0) {
+        return { infos: [], timedOut: false, skipped: false };
+    }
+    const infos: vscode.SymbolInformation[] = [];
+    const t0 = Date.now();
+    let timedOut = false;
+    for (const provider of providers) {
+        if (token.isCancellationRequested) {
+            return { infos, timedOut: false, skipped: false };
+        }
+        const remaining = WS_SEARCH_TIMEOUT_MS - (Date.now() - t0);
+        if (remaining <= 0) {
+            timedOut = true;
+            break;
+        }
+        let r: vscode.SymbolInformation[] | null | undefined;
+        try {
+            const v = await withTimeout(provider.provideWorkspaceSymbols(query, token), remaining);
+            if (v === TIMEOUT_SYMBOL) {
+                timedOut = true;
+                break;
+            }
+            r = v;
+        } catch (err) {
+            logError(`[符号搜索] workspace symbol provider 异常: ${String(err)}`);
+            r = undefined;
+        }
+        if (r) {
+            infos.push(...r);
+        }
+    }
+    return { infos, timedOut, skipped: false };
+}
+
 /**
  * 搜索当前已打开文档中的符号（DocumentSymbol）。
  * 语言服务器对打开文档必然有数据，秒回，无需读盘；
@@ -410,31 +502,40 @@ export async function searchSymbols(
     log(`[符号搜索] 关键词="${keyword}" 查询词="${query}" 类型=${kind}`);
 
     // 一级：工作区符号搜索（#）
+    // 说明：不直接执行 vscode.executeWorkspaceSymbolProvider 命令（不可取消，连续输入会
+    // 向语言服务器堆积无法终止的搜索请求，可能压垮 cpptools）。改用 provider API 直调并
+    // 传入 token（取消真正生效），另加最短查询长度与整体超时保护，详见 searchWorkspaceSymbols。
     if (query) {
         const t0 = Date.now();
-        let infos: vscode.SymbolInformation[] | null | undefined;
-        try {
-            infos = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
-                'vscode.executeWorkspaceSymbolProvider',
-                query
-            );
-        } catch (err) {
-            logError(`[符号搜索] workspace symbol 命令异常: ${String(err)}`);
-            infos = undefined;
-        }
-        if (infos !== undefined && infos !== null) {
-            const results = filterWorkspaceSymbols(infos, kinds, lowerKw);
+        const ws = await searchWorkspaceSymbols(query, token);
+        const elapsed = Date.now() - t0;
+        if (ws.skipped) {
             log(
-                `[符号搜索] 一级 workspace symbol: 耗时 ${Date.now() - t0}ms, ` +
-                    `原始 ${infos.length} 条, 过滤后 ${results.length} 条`
+                `[符号搜索] 一级 workspace symbol: 查询词过短（<${MIN_WS_QUERY_LEN} 字符），` +
+                    `跳过语言服务器搜索以避全索引匹配（耗时 ${elapsed}ms）`
+            );
+        } else if (ws.timedOut) {
+            logError(
+                `[符号搜索] 一级 workspace symbol: 超过 ${WS_SEARCH_TIMEOUT_MS}ms 未完成，放弃等待（耗时 ${elapsed}ms，已取回 ${ws.infos.length} 条）`
+            );
+            // 超时前可能已从部分 provider 取回结果，先尝试使用
+            const results = filterWorkspaceSymbols(ws.infos, kinds, lowerKw);
+            if (results.length > 0) {
+                return { results, source: 'workspace' };
+            }
+        } else {
+            const results = filterWorkspaceSymbols(ws.infos, kinds, lowerKw);
+            log(
+                `[符号搜索] 一级 workspace symbol: 耗时 ${elapsed}ms, ` +
+                    `原始 ${ws.infos.length} 条, 过滤后 ${results.length} 条`
             );
             // 注意：必须仅在过滤后 results 非空时返回。若原始有数据但过滤后为空
             // （多词 AND 或类型筛选不匹配），继续降级到二级/三级，否则会假"未找到"。
             if (results.length > 0) {
                 return { results, source: 'workspace' };
             }
-            if (infos.length > 0) {
-                log(`[符号搜索] 一级原始 ${infos.length} 条但本地过滤后为空，继续降级`);
+            if (ws.infos.length > 0) {
+                log(`[符号搜索] 一级原始 ${ws.infos.length} 条但本地过滤后为空，继续降级`);
             }
         }
     }

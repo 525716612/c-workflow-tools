@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { log, showChannel } from '../outputChannel';
+import { searchWorkspaceSymbols } from './symbolSearch';
 
 /**
  * 符号搜索诊断命令：输出 C/C++ 语言服务器状态与各级符号搜索统计，
@@ -32,27 +33,30 @@ export async function diagnoseSymbolSearch(): Promise<void> {
     );
 
     // 4. 工作区符号搜索（#）
+    // 与 searchSymbols 一致：直调 provider 并传 token（executeCommand 版本不可取消、
+    // 无超时，反复运行诊断同样可能堆积请求压垮语言服务器），固定查询词 'app'。
     try {
         const t0 = Date.now();
-        const infos = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
-            'vscode.executeWorkspaceSymbolProvider',
-            'app'
-        );
+        const ws = await searchWorkspaceSymbols('app', new vscode.CancellationTokenSource().token);
         const elapsed = Date.now() - t0;
-        if (infos === undefined || infos === null) {
+        if (ws.skipped) {
+            log(`工作区符号搜索(#): 查询词过短，跳过（${elapsed}ms）`);
+        } else if (ws.timedOut) {
+            log(`工作区符号搜索(#): 超时未完成（${elapsed}ms，已取回 ${ws.infos.length} 条）`);
+        } else if (ws.infos.length === 0) {
             log(`工作区符号搜索(#): 无 provider 响应（${elapsed}ms）——语言服务器未注册，符号搜索不可用`);
         } else {
-            log(`工作区符号搜索(#): 返回 ${infos.length} 条（${elapsed}ms）`);
-            infos.slice(0, 10).forEach((s) => {
+            log(`工作区符号搜索(#): 返回 ${ws.infos.length} 条（${elapsed}ms）`);
+            ws.infos.slice(0, 10).forEach((s) => {
                 const kind = vscode.SymbolKind[s.kind] ?? s.kind;
                 log(`  - [${kind}] ${s.name}  ${vscode.workspace.asRelativePath(s.location.uri)}:${s.location.range.start.line + 1}`);
             });
-            if (infos.length > 10) {
-                log(`  ... 等 ${infos.length} 条`);
+            if (ws.infos.length > 10) {
+                log(`  ... 等 ${ws.infos.length} 条`);
             }
         }
     } catch (err) {
-        log(`工作区符号搜索(#): 命令异常 ${String(err)}`);
+        log(`工作区符号搜索(#): 异常 ${String(err)}`);
     }
 
     // 5. 打开文档的 document symbol

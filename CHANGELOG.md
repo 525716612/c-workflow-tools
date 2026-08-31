@@ -2,6 +2,13 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.7] - 2026-08-31
+
+### Fixed
+
+- 修复：符号搜索（#）可能压垮语言服务器（如 cpptools 崩溃）。原来通过 `vscode.executeWorkspaceSymbolProvider` 命令搜索，取消令牌对其无效，连续输入时会在语言服务器端堆积无法终止的全索引搜索请求；现改为直调 `vscode.languages.getWorkspaceSymbolProviders()` 并传入可取消令牌（经 LSP `$/cancelRequest` 真正终止），同时新增最短查询词限制（过短查询跳过语言服务器搜索）与单次搜索超时兜底
+- 修复：符号搜索诊断命令使用同类不可取消的搜索方式，已同步改为 provider 直调
+
 ## [0.0.6] - 2026-08-31
 
 ### Added
