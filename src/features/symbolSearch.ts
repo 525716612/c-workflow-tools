@@ -342,7 +342,7 @@ const TIMEOUT_SYMBOL = Symbol('ws-search-timeout');
  * @param p 原始 Promise（ProviderResult 可能是同步值或 thenable）
  * @param ms 超时毫秒数
  */
-function withTimeout<T>(p: vscode.ProviderResult<T>, ms: number): Promise<T | typeof TIMEOUT_SYMBOL> {
+function withTimeout<T>(p: T | PromiseLike<T>, ms: number): Promise<T | typeof TIMEOUT_SYMBOL> {
     return new Promise<T | typeof TIMEOUT_SYMBOL>((resolve, reject) => {
         const timer = setTimeout(() => resolve(TIMEOUT_SYMBOL), ms);
         Promise.resolve(p).then(
