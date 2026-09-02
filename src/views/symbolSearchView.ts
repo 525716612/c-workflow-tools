@@ -85,6 +85,11 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
                         view.webview.postMessage({ type: 'progress', scanned: p.scanned, total: p.total });
                     }
                 }
+            }, (msg) => {
+                // 等待语言服务器就位等状态提示
+                if (!token.token.isCancellationRequested) {
+                    view.webview.postMessage({ type: 'status', message: msg });
+                }
             });
             if (token.token.isCancellationRequested) {
                 return;
@@ -543,6 +548,9 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         const msg = e.data;
         if (msg.type === 'searching') {
             statusEl.textContent = '${I.searching}';
+        } else if (msg.type === 'status') {
+            // 等待语言服务器就位等实时状态
+            statusEl.textContent = msg.message;
         } else if (msg.type === 'progress') {
             statusEl.textContent = '${I.searchingProgress}' + msg.scanned + '/' + msg.total + '${I.parenR}';
         } else if (msg.type === 'results') {

@@ -358,18 +358,137 @@ function withTimeout<T>(p: T | PromiseLike<T>, ms: number): Promise<T | typeof T
     });
 }
 
+/** 已安装的 C/C++ 语言服务器扩展 ID（按激活优先级） */
+const KNOWN_C_LANGUAGE_SERVERS = ['ms-vscode.cpptools', 'llvm-vs-code-extensions.vscode-clangd'];
+/** 等待语言服务器就位的最长时间（毫秒） */
+const LS_READY_TIMEOUT_MS = 15000;
+/** 轮询等待 provider 注册的间隔（毫秒） */
+const LS_POLL_INTERVAL_MS = 200;
+
+/** 延时（毫秒） */
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 确保工作区符号搜索的语言服务器就位。
+ *
+ * 符号搜索依赖语言服务器（如 ms-vscode.cpptools）注册 workspace symbol provider，
+ * 而语言服务器扩展按需懒激活、且常在打开 C/C++ 文件后才启动：插件先被激活时，
+ * 首次搜索可能遇到 provider 尚未注册、直接返回空导致误判「未找到」。此函数：
+ *   1. 探测并主动激活已安装的 C/C++ 语言服务器扩展（激活幂等，已激活则跳过）；
+ *   2. 轮询等待 workspace symbol provider 注册（最长 LS_READY_TIMEOUT_MS，可取消）；
+ *   3. 仍无 provider 时返回 false，由调用方降级到打开文档/正则扫描。
+ *
+ * 运行时无 provider 枚举 API 时无法检测就位状态，直接返回 true 走命令路径
+ * （executeWorkspaceSymbolProvider 自身有超时兜底，且语言服务器扩展已尝试激活）。
+ *
+ * @param token 取消令牌
+ * @param onStatus 就位状态回调（用于在 UI 上提示「等待语言服务器…」）
+ * @returns provider 已就位（或无法检测、交由命令路径）返回 true，否则 false
+ */
+async function ensureLanguageServerReady(
+    token: vscode.CancellationToken,
+    onStatus?: (message: string) => void
+): Promise<boolean> {
+    const hasEnumeration = getWorkspaceSymbolProviders() !== undefined;
+    if (hasEnumeration && getWorkspaceSymbolProviders()!.length > 0) {
+        return true;
+    }
+    // 1. 尝试激活已安装的 C/C++ 语言服务器扩展
+    for (const id of KNOWN_C_LANGUAGE_SERVERS) {
+        if (token.isCancellationRequested) {
+            return false;
+        }
+        const ext = vscode.extensions.getExtension(id);
+        if (ext && !ext.isActive) {
+            onStatus?.(`正在启动语言服务器（${id}）…`);
+            try {
+                await ext.activate();
+            } catch (err) {
+                logError(`[符号搜索] 激活语言服务器 ${id} 失败: ${String(err)}`);
+            }
+        }
+    }
+    if (!hasEnumeration) {
+        return true;
+    }
+    // 2. 轮询等待 provider 注册（语言服务器激活完成后注册 workspace symbol provider）
+    const deadline = Date.now() + LS_READY_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+        if (token.isCancellationRequested) {
+            return false;
+        }
+        if (getWorkspaceSymbolProviders()!.length > 0) {
+            onStatus?.('语言服务器已就绪');
+            return true;
+        }
+        await delay(LS_POLL_INTERVAL_MS);
+    }
+    onStatus?.('语言服务器等待超时，降级到打开文档/正则扫描');
+    return false;
+}
+
+/**
+ * 获取已注册的工作区符号 provider。
+ *
+ * vscode.languages.getWorkspaceSymbolProviders 并非官方 VS Code API
+ * （1.x 全版本运行时均不存在，此前补的类型声明是误判），仅做特性检测：
+ * 未来版本若提供则直调（token 可真正传给语言服务器，取消时经 LSP $/cancelRequest
+ * 通知服务器终止搜索）；不提供时返回 undefined，由 searchWorkspaceSymbols
+ * 降级到 vscode.executeWorkspaceSymbolProvider 命令。
+ */
+function getWorkspaceSymbolProviders(): vscode.WorkspaceSymbolProvider[] | undefined {
+    const languagesApi = vscode.languages as unknown as {
+        getWorkspaceSymbolProviders?: () => vscode.WorkspaceSymbolProvider[];
+    };
+    if (typeof languagesApi.getWorkspaceSymbolProviders === 'function') {
+        return languagesApi.getWorkspaceSymbolProviders();
+    }
+    return undefined;
+}
+
+/**
+ * 降级路径：通过 vscode.executeWorkspaceSymbolProvider 命令执行工作区符号搜索。
+ *
+ * 该命令不接受 CancellationToken（取消无效），连续输入时理论上仍可能堆积请求，
+ * 因此：1) 查询词过短仍由调用方（searchWorkspaceSymbols）先拦截；
+ * 2) 整体有 WS_SEARCH_TIMEOUT_MS 超时兜底，请求不无限挂起；
+ * 3) token 已取消时直接返回，不发出请求。
+ */
+async function searchWorkspaceSymbolsViaCommand(
+    query: string,
+    token: vscode.CancellationToken
+): Promise<{ infos: vscode.SymbolInformation[]; timedOut: boolean; skipped: boolean }> {
+    if (token.isCancellationRequested) {
+        return { infos: [], timedOut: false, skipped: false };
+    }
+    try {
+        const v = await withTimeout(
+            vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+                'vscode.executeWorkspaceSymbolProvider',
+                query
+            ),
+            WS_SEARCH_TIMEOUT_MS
+        );
+        if (v === TIMEOUT_SYMBOL) {
+            return { infos: [], timedOut: true, skipped: false };
+        }
+        const infos = Array.isArray(v) ? v : [];
+        return { infos, timedOut: false, skipped: false };
+    } catch (err) {
+        logError(`[符号搜索] workspace symbol 命令异常: ${String(err)}`);
+        return { infos: [], timedOut: false, skipped: false };
+    }
+}
+
 /**
  * 一级：工作区符号搜索（#）。
  *
- * 重要：不使用 vscode.commands.executeCommand('vscode.executeWorkspaceSymbolProvider', query)。
- * 该命令不接受 CancellationToken，取消令牌对它无效；输入防抖期间连续触发搜索时，
- * 已发出的请求无法终止，会在语言服务器端堆积（尤其短查询触发全索引模糊匹配），
- * 可能把 cpptools 等服务器进程压垮。
- *
- * 改为直接调用 vscode.languages.getWorkspaceSymbolProviders() 返回的 provider：
- *   - token 可真正传给语言服务器，取消时经 LSP $/cancelRequest 通知服务器终止搜索；
- *   - 查询词过短（< MIN_WS_QUERY_LEN）时跳过，避免全索引匹配风暴；
- *   - 单次搜索有整体超时兜底，服务器卡死时不无限等待。
+ * 优先直调 provider 并传入 token（取消真正生效，避免连续输入时请求在语言服务器端
+ * 堆积压垮 cpptools）；运行时 API 不支持时降级到 executeWorkspaceSymbolProvider 命令
+ * （不可取消，但保留最短查询长度拦截与整体超时兜底，见 searchWorkspaceSymbolsViaCommand）。
+ * 查询词过短（< MIN_WS_QUERY_LEN）时跳过，避免全索引模糊匹配风暴。
  *
  * @param query 查询词（已按单个关键词提取）
  * @param token 取消令牌
@@ -377,12 +496,22 @@ function withTimeout<T>(p: T | PromiseLike<T>, ms: number): Promise<T | typeof T
  */
 export async function searchWorkspaceSymbols(
     query: string,
-    token: vscode.CancellationToken
+    token: vscode.CancellationToken,
+    onStatus?: (message: string) => void
 ): Promise<{ infos: vscode.SymbolInformation[]; timedOut: boolean; skipped: boolean }> {
     if (query.length < MIN_WS_QUERY_LEN) {
         return { infos: [], timedOut: false, skipped: true };
     }
-    const providers = vscode.languages.getWorkspaceSymbolProviders();
+    // 语言服务器可能尚未就位（扩展未激活 / provider 未注册），先等待就位再搜索，
+    // 避免首次搜索因 provider 未注册而空手降级
+    const ready = await ensureLanguageServerReady(token, onStatus);
+    if (!ready) {
+        return { infos: [], timedOut: false, skipped: false };
+    }
+    const providers = getWorkspaceSymbolProviders();
+    if (providers === undefined) {
+        return searchWorkspaceSymbolsViaCommand(query, token);
+    }
     if (providers.length === 0) {
         return { infos: [], timedOut: false, skipped: false };
     }
@@ -480,12 +609,14 @@ async function searchOpenDocuments(
  * @param kind        符号类型（'all' 表示全部类型）
  * @param token       取消令牌
  * @param onProgress  扫描进度回调（正则兜底时上报）
+ * @param onStatus    状态回调（等待语言服务器就位等提示，可空）
  */
 export async function searchSymbols(
     keyword: string,
     kind: SymbolKind,
     token: vscode.CancellationToken,
-    onProgress?: (p: SearchProgress) => void
+    onProgress?: (p: SearchProgress) => void,
+    onStatus?: (message: string) => void
 ): Promise<SearchOutcome> {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
@@ -502,12 +633,13 @@ export async function searchSymbols(
     log(`[符号搜索] 关键词="${keyword}" 查询词="${query}" 类型=${kind}`);
 
     // 一级：工作区符号搜索（#）
-    // 说明：不直接执行 vscode.executeWorkspaceSymbolProvider 命令（不可取消，连续输入会
-    // 向语言服务器堆积无法终止的搜索请求，可能压垮 cpptools）。改用 provider API 直调并
-    // 传入 token（取消真正生效），另加最短查询长度与整体超时保护，详见 searchWorkspaceSymbols。
+    // 说明：优先直调 provider 并传入 token（取消真正生效，避免连续输入时请求在语言服务器
+    // 端堆积压垮 cpptools）；getWorkspaceSymbolProviders 非官方 API，运行时不存在时降级到
+    // vscode.executeWorkspaceSymbolProvider 命令（不可取消，但有最短查询长度与整体超时
+    // 兜底）。详见 searchWorkspaceSymbols。
     if (query) {
         const t0 = Date.now();
-        const ws = await searchWorkspaceSymbols(query, token);
+        const ws = await searchWorkspaceSymbols(query, token, onStatus);
         const elapsed = Date.now() - t0;
         if (ws.skipped) {
             log(

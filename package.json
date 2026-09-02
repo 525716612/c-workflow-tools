@@ -3,7 +3,7 @@
   "displayName": "C Workflow Tools",
   "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、全局符号搜索、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
   "publisher": "cxy",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -34,7 +34,11 @@
   },
   "activationEvents": [
     "onLanguage:c",
-    "onLanguage:cpp"
+    "onLanguage:cpp",
+    "onCommand:c-workflow-tools.selectMacroBlock",
+    "onCommand:c-workflow-tools.gitDifftoolCompare",
+    "onCommand:c-workflow-tools.packageDiff",
+    "onCommand:c-workflow-tools.diagnoseSymbolSearch"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -129,11 +133,13 @@
     "@types/vscode": "^1.118.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
-    "archiver": "^7.0.1",
     "esbuild": "^0.27.3",
     "eslint": "^9.39.3",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1"
   }
 }

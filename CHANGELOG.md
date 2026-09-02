@@ -2,6 +2,23 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.8] - 2026-09-02
+
+### Fixed
+
+- 修复：符号搜索在 `vscode.languages.getWorkspaceSymbolProviders` 处崩溃（该 API 并非官方 VS Code API，运行时不存在）。现改为特性检测 + 降级到 `vscode.executeWorkspaceSymbolProvider` 命令，并保留最短查询词限制与超时兜底
+- 修复：符号搜索依赖语言服务器（如 cpptools）注册 workspace symbol provider，但语言服务器按需懒激活，首次搜索可能因 provider 未注册而误降级。现搜索前自动激活已安装的 C/C++ 语言服务器扩展并轮询等待 provider 就位（最长 15s，可取消），搜索面板实时显示「正在启动语言服务器…」状态
+
+### Performance
+
+- 启动加载提速：`archiver`（含 zip-stream/compress-commons 等依赖链）改为按需懒加载并移出主 bundle，`dist/extension.js` 约 405KB 降至 47KB（-88%）
+- 双击宏块选中热路径优化：全局选择变化监听增加 C/C++ 语言过滤，非相关文件零开销；调试日志加 `DEBUG` 开关，生产构建中消除每次选词变更的日志输出
+
+### Changed
+
+- 补充 `onCommand` 激活事件，Git 对比/打包/符号搜索诊断命令在未打开 C/C++ 文件时也能直接使用
+- `archiver` 从 devDependencies 移至 dependencies（发布时随 vsix 打包，运行时可用）
+
 ## [0.0.7] - 2026-08-31
 
 ### Fixed

@@ -37,7 +37,7 @@ export async function diagnoseSymbolSearch(): Promise<void> {
     // 无超时，反复运行诊断同样可能堆积请求压垮语言服务器），固定查询词 'app'。
     try {
         const t0 = Date.now();
-        const ws = await searchWorkspaceSymbols('app', new vscode.CancellationTokenSource().token);
+        const ws = await searchWorkspaceSymbols('app', new vscode.CancellationTokenSource().token, (msg) => log(msg));
         const elapsed = Date.now() - t0;
         if (ws.skipped) {
             log(`工作区符号搜索(#): 查询词过短，跳过（${elapsed}ms）`);

@@ -10,6 +10,20 @@ import { log, logError } from '../outputChannel';
 /** 双击切换状态有效时间窗（毫秒）：同一块在窗口内再次双击才切换分支/整块 */
 const STATE_TIMEOUT_MS = 3000;
 
+/**
+ * 双击识别调试日志开关。
+ * 置为 true 可在输出面板查看每次选择变化的详细判定过程。
+ * 每次选择变化都会输出日志，开销较大，仅调试用，默认关闭。
+ */
+const DEBUG = false;
+
+/** 调试日志：DEBUG 开启时输出到输出面板；生产构建（minify）中会被常量折叠消除 */
+function debugLog(message: string): void {
+    if (DEBUG) {
+        log(message);
+    }
+}
+
 /** 判定相邻选区事件属于同一拖选过程的时间上限（毫秒）：缓慢拖选中途的停顿间隔 */
 const DRAG_EVENT_WINDOW_MS = 2000;
 
@@ -217,6 +231,11 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
     context.subscriptions.push(
         vscode.window.onDidChangeTextEditorSelection((e) => {
             const editor = e.textEditor;
+            // 仅处理 C/C++ 文档：非相关语言直接返回，避免全局监听在任意文件里空转
+            const languageId = editor.document.languageId;
+            if (languageId !== 'c' && languageId !== 'cpp' && languageId !== 'cuda-cpp') {
+                return;
+            }
             const selection = e.selections[0];
             if (!selection) {
                 return;
@@ -249,12 +268,12 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
 
             const activeLine = selection.active.line;
             const lineText = editor.document.lineAt(activeLine).text;
-            // 调试日志：双击候选命中指令行的诊断信息
-            log(`[双击诊断] lang=${editor.document.languageId} line=${activeLine + 1} text=${JSON.stringify(lineText)} sel=[${selection.start.line + 1}:${selection.start.character},${selection.end.line + 1}:${selection.end.character}]`);
+            // 调试日志：双击候选命中指令行的诊断信息（仅 DEBUG 开启时输出）
+            debugLog(`[双击诊断] lang=${editor.document.languageId} line=${activeLine + 1} text=${JSON.stringify(lineText)} sel=[${selection.start.line + 1}:${selection.start.character},${selection.end.line + 1}:${selection.end.character}]`);
             // 该行必须是指令行（#if/#elif/#else/#endif）
             const directive = extractDirectiveRange(lineText);
             if (!directive) {
-                log(`[双击拦截] 非指令行`);
+                debugLog(`[双击拦截] 非指令行`);
                 lastState = undefined;
                 return;
             }
@@ -293,7 +312,7 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             const coverHash = selEnd > hashPos && selStart <= hashPos;
             const fullDirectiveWord = selStart >= directive.start && selEnd <= directive.end;
             if (!coverHash && !fullDirectiveWord) {
-                log(`[双击拦截] 普通选词（未覆盖 # 且非完整指令词）`);
+                debugLog(`[双击拦截] 普通选词（未覆盖 # 且非完整指令词）`);
                 lastState = undefined;
                 // 选区落在指令词范围内但非完整词（如从 #endif 的 f 往回拖选的部分中间态）：
                 // 记录提示供后续选区兜底放行
@@ -310,7 +329,7 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
                     selStart <= wordRange.start.character &&
                     selEnd >= wordRange.end.character;
                 if (!isWordSelection) {
-                    log(`[双击拦截] 非单词选区`);
+                    debugLog(`[双击拦截] 非单词选区`);
                     lastState = undefined;
                     return;
                 }
@@ -327,7 +346,7 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
                 now - prevChange.time < DRAG_EVENT_WINDOW_MS &&
                 !isDoubleClickWordSequence(prevChange, prevPrevChange, now)
             ) {
-                log(`[双击拦截] 快速拖选（按下后直接扩展选区）`);
+                debugLog(`[双击拦截] 快速拖选（按下后直接扩展选区）`);
                 lastState = undefined;
                 dragHint = undefined;
                 return;
@@ -336,7 +355,7 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             // 中间态再扩展为完整单词；双击选词则是空选区直接跳变为完整单词选区。
             // 据此区分，避免缓慢拖选误触发双击选中整块。
             if (prevChange && isDragContinuation(prevChange, editor, selection, now - prevChange.time)) {
-                log(`[双击拦截] 拖选过程（锚点不变、选区重叠）`);
+                debugLog(`[双击拦截] 拖选过程（锚点不变、选区重叠）`);
                 lastState = undefined;
                 dragHint = undefined;
                 return;
@@ -346,7 +365,7 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             // 此时即使本次选区恰好等于完整单词、无法凭选区本身与双击区分，也放行。
             if (dragHint) {
                 if (dragHint.line === activeLine && now - dragHint.time < DRAG_EVENT_WINDOW_MS) {
-                    log(`[双击拦截] 拖选扩展（指令词中间态提示）`);
+                    debugLog(`[双击拦截] 拖选扩展（指令词中间态提示）`);
                     lastState = undefined;
                     dragHint = undefined;
                     return;
@@ -358,7 +377,7 @@ export function registerDoubleClickMacroSelection(context: vscode.ExtensionConte
             const lines = editor.document.getText().split(/\r?\n/);
             const whole = locateMacroBlock(lines, activeLine);
             if (!whole) {
-                log(`[双击拦截] 未找到所属条件编译块`);
+                debugLog(`[双击拦截] 未找到所属条件编译块`);
                 lastState = undefined;
                 return;
             }
