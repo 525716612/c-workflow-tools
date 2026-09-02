@@ -3,7 +3,7 @@
   "displayName": "C Workflow Tools",
   "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、全局符号搜索、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
   "publisher": "cxy",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -35,6 +35,7 @@
   "activationEvents": [
     "onLanguage:c",
     "onLanguage:cpp",
+    "onStartupFinished",
     "onCommand:c-workflow-tools.selectMacroBlock",
     "onCommand:c-workflow-tools.gitDifftoolCompare",
     "onCommand:c-workflow-tools.packageDiff",

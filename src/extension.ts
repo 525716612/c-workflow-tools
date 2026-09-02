@@ -3,6 +3,7 @@ import { registerCommands } from './registerCommands';
 import { registerDoubleClickMacroSelection } from './features/selectMacroBlock';
 import { registerWorkflowView } from './views/workflowView';
 import { registerSymbolSearchView } from './views/symbolSearchView';
+import { registerTerminalLink } from './features/terminalLink';
 import { initOutputChannel } from './outputChannel';
 
 /**
@@ -24,6 +25,9 @@ export function activate(context: vscode.ExtensionContext) {
     // 注册活动栏侧边栏视图（上半部：符号搜索；下半部：Git 工作流）
     registerSymbolSearchView(context);
     registerWorkflowView(context);
+
+    // 注册终端路径链接（Ctrl+点击终端路径直接打开文件，自动裁剪路径）
+    registerTerminalLink(context);
 }
 
 export function deactivate() {

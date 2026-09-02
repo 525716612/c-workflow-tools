@@ -240,7 +240,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     #btn:hover {
         background: var(--vscode-button-hoverBackground);
     }
-    /* 自定义下拉（原生 select 弹窗无法加动画，改为 div 模拟） */
+    /* 类型筛选下拉：webview 内自定义渲染（CSS 变量跟随主题、无原生 select 白闪） */
     .dropdown {
         position: relative;
         flex: 1;
@@ -270,6 +270,11 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     }
     .dropdown.open .dropdown-arrow {
         transform: rotate(180deg);
+    }
+    #kindLabel {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .dropdown-menu {
         position: absolute;
@@ -376,7 +381,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     </div>
     <div class="search-row">
         <div class="dropdown" id="kindDropdown">
-            <button type="button" class="dropdown-toggle" id="kindToggle">
+            <button type="button" class="dropdown-toggle" id="kindToggle" title="${zh ? '筛选符号类型' : 'Filter symbol type'}">
                 <span id="kindLabel">${I.kindAll}</span>
                 <i class="codicon codicon-chevron-down dropdown-arrow"></i>
             </button>
@@ -446,7 +451,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         }
         debounceTimer = setTimeout(doSearch, ${DEBOUNCE_MS});
     });
-    // 自定义下拉：类型筛选（带展开/收起动画）
+    // 类型筛选下拉（webview 内自定义渲染，跟随主题）
     const kindDropdown = document.getElementById('kindDropdown');
     const kindToggle = document.getElementById('kindToggle');
     const kindLabel = document.getElementById('kindLabel');

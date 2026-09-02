@@ -2,6 +2,20 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.9] - 2026-09-02
+
+### Added
+
+- 新增：终端路径链接。Ctrl+点击 终端输出中的文件路径时，自动裁剪路径并直接打开文件跳转行列，不再把整行复制到文件搜索栏。支持裁剪编译器前缀/引号/行号后缀（`:行`、`:行:列`、`(行,列)`）、带空格路径（引号包裹）、相对路径（按终端 cwd 解析，需启用 shell 集成）、CMake/ninja 构建产物（`CMakeFiles/xxx.dir/*.c.o` 自动还原为源文件）。找不到文件时提示并可选回退到文件搜索（此时为裁剪后的干净路径）
+
+### Fixed
+
+- 修复：终端路径链接无法解析全角冒号分隔的行号格式（如 `CUSTOM/Mediatek/APP/main.c：48`），现兼容 `：行` / `：行：列` 格式
+
+### Changed
+
+- 符号搜索面板的类型筛选改为自定义下拉框：点击在按钮下方展开选项列表，样式跟随 VS Code 主题（避免原生 select 在 Windows 上的系统渲染白闪），支持展开动画、点击外部/Esc 收起
+
 ## [0.0.8] - 2026-09-02
 
 ### Fixed
