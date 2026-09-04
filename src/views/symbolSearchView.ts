@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import { log } from '../outputChannel';
-import { searchSymbols, SymbolKind } from '../features/symbolSearch';
+import { searchSymbols, SymbolKind, filterWorkspaceSymbols } from '../features/symbolSearch';
 
 /** 输入防抖间隔 */
 const DEBOUNCE_MS = 200;
 /** 结果列表最多渲染条数（避免 webview DOM 过大） */
 const MAX_RENDER = 1000;
+/** 一级 workspace 结果缓存有效期（ms）：切换类型时本地过滤秒出，过期则重新搜索 */
+const WS_CACHE_TTL_MS = 30000;
 
 /** 搜索面板消息类型（webview <-> host） */
 interface SearchMessage {
@@ -31,6 +33,11 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
 
     private view?: vscode.WebviewView;
     private searchToken?: vscode.CancellationTokenSource;
+    /** 最近一次一级 workspace 原始结果缓存（切换类型时本地过滤，避免重复慢搜索） */
+    private lastWsKeyword?: string;
+    private lastWsInfos?: vscode.SymbolInformation[];
+    private lastWsAt?: number;
+    private lastWsKind?: SymbolKind;
 
     constructor(private readonly extensionUri: vscode.Uri) {}
 
@@ -66,31 +73,63 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         if (!view) {
             return;
         }
+        const kw = keyword.trim();
+        // 切换类型且关键词未变：若一级 workspace 原始结果已缓存且新鲜，本地过滤秒出，
+        // 避免再次触发慢速的语言服务器搜索（搜索不存在内容时尤甚）。过滤为空时不短路，
+        // 继续完整搜索，防止漏掉降级（document）来源的结果。
+        if (
+            symbolType !== this.lastWsKind &&
+            kw !== '' &&
+            kw === this.lastWsKeyword &&
+            this.lastWsInfos &&
+            this.lastWsInfos.length > 0 &&
+            Date.now() - (this.lastWsAt ?? 0) < WS_CACHE_TTL_MS
+        ) {
+            const kinds = new Set<Exclude<SymbolKind, 'all'>>(
+                symbolType === 'all' ? ['function', 'macro', 'variable', 'struct', 'enum'] : [symbolType]
+            );
+            const filtered = filterWorkspaceSymbols(this.lastWsInfos, kinds, kw.toLowerCase());
+            if (filtered.length > 0) {
+                this.searchToken?.cancel();
+                this.lastWsKind = symbolType;
+                const truncated = filtered.length > MAX_RENDER;
+                view.webview.postMessage({
+                    type: 'results',
+                    results: truncated ? filtered.slice(0, MAX_RENDER) : filtered,
+                    total: filtered.length,
+                    truncated,
+                    source: 'workspace',
+                    elapsed: 0,
+                });
+                return;
+            }
+        }
         this.searchToken?.cancel();
         const token = new vscode.CancellationTokenSource();
         this.searchToken = token;
 
-        const kw = keyword.trim();
         view.webview.postMessage({ type: 'searching', keyword: kw });
 
         const startTime = Date.now();
-        let lastProgressSent = 0;
         try {
-            const outcome = await searchSymbols(kw, symbolType, token.token, (p) => {
-                // 节流进度上报，避免消息风暴
-                const now = Date.now();
-                if (now - lastProgressSent > 120 || p.scanned >= p.total) {
-                    lastProgressSent = now;
+            const outcome = await searchSymbols(
+                kw,
+                symbolType,
+                token.token,
+                (msg) => {
+                    // 等待语言服务器就位等状态提示
                     if (!token.token.isCancellationRequested) {
-                        view.webview.postMessage({ type: 'progress', scanned: p.scanned, total: p.total });
+                        view.webview.postMessage({ type: 'status', message: msg });
                     }
+                },
+                (infos) => {
+                    // 缓存一级 workspace 原始结果：切换类型时本地过滤，避免重复慢搜索
+                    this.lastWsKeyword = kw;
+                    this.lastWsInfos = infos;
+                    this.lastWsAt = Date.now();
+                    this.lastWsKind = symbolType;
                 }
-            }, (msg) => {
-                // 等待语言服务器就位等状态提示
-                if (!token.token.isCancellationRequested) {
-                    view.webview.postMessage({ type: 'status', message: msg });
-                }
-            });
+            );
             if (token.token.isCancellationRequested) {
                 return;
             }
@@ -147,14 +186,12 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
                   statusInitial: '输入关键词回车搜索；不输入关键词则列出全部符号',
                   statusIdle: '输入关键词自动搜索；回车立即搜索；可切换类型筛选',
                   searching: '搜索中…',
-                  searchingProgress: '搜索中…（',
                   parenL: '（',
                   parenR: '）',
                   srcLabel: '，来源：',
                   msComma: 'ms，',
                   srcWorkspace: '工作区索引',
                   srcDocument: '当前文档',
-                  srcRegex: '正则扫描',
                   srcNone: '无来源',
                   notFound: '未找到匹配的符号',
                   totalPrefix: '共 ',
@@ -162,8 +199,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
                   truncatedPrefix: '（仅显示前 ',
                   truncatedSuffix: ' 个）',
                   errorPrefix: '搜索出错：',
-                  emptyHint:
-                      '未找到匹配的符号。\\n请确认：\\n1. 已安装并启用 C/C++ 扩展（ms-vscode.cpptools）\\n2. 工作区已建立符号索引（首次需等待）\\n3. 可运行命令「C Workflow: 诊断符号搜索」查看原因',
+                  emptyHint: '未找到匹配的符号，请尝试更换关键词或切换符号类型。',
               }
             : {
                   placeholder: 'Multi-word search, e.g. app turn on',
@@ -177,14 +213,12 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
                   statusInitial: 'Type keywords and press Enter to search; empty lists all symbols',
                   statusIdle: 'Auto-search as you type; Enter to search now; switch type to filter',
                   searching: 'Searching…',
-                  searchingProgress: 'Searching… (',
                   parenL: ' (',
                   parenR: ')',
                   srcLabel: ', source: ',
                   msComma: 'ms, ',
                   srcWorkspace: 'Workspace index',
                   srcDocument: 'Current document',
-                  srcRegex: 'Regex scan',
                   srcNone: 'None',
                   notFound: 'No matching symbols',
                   totalPrefix: '',
@@ -192,8 +226,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
                   truncatedPrefix: ' (showing first ',
                   truncatedSuffix: ')',
                   errorPrefix: 'Search error: ',
-                  emptyHint:
-                      'No matching symbols found.\\nPlease check:\\n1. C/C++ extension (ms-vscode.cpptools) is installed and enabled\\n2. Workspace symbol index is built (first time may take a while)\\n3. Run command "C Workflow: Diagnose Symbol Search" for details',
+                  emptyHint: 'No matching symbols found. Try a different keyword or filter type.',
               };
         return /* html */ `<!DOCTYPE html>
 <html lang="${zh ? 'zh-CN' : 'en'}">
@@ -500,7 +533,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         }
     });
 
-    const SOURCE_LABEL = { workspace: '${I.srcWorkspace}', document: '${I.srcDocument}', regex: '${I.srcRegex}', none: '${I.srcNone}' };
+    const SOURCE_LABEL = { workspace: '${I.srcWorkspace}', document: '${I.srcDocument}', none: '${I.srcNone}' };
 
     function render(msg) {
         const results = msg.results;
@@ -556,8 +589,6 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         } else if (msg.type === 'status') {
             // 等待语言服务器就位等实时状态
             statusEl.textContent = msg.message;
-        } else if (msg.type === 'progress') {
-            statusEl.textContent = '${I.searchingProgress}' + msg.scanned + '/' + msg.total + '${I.parenR}';
         } else if (msg.type === 'results') {
             render(msg);
         } else if (msg.type === 'error') {

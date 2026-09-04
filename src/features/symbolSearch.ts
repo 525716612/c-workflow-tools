@@ -5,7 +5,7 @@ import { log, logError } from '../outputChannel';
 export type SymbolKind = 'all' | 'function' | 'macro' | 'variable' | 'struct' | 'enum';
 
 /** 搜索结果的来源 */
-export type SearchSource = 'workspace' | 'document' | 'regex' | 'none';
+export type SearchSource = 'workspace' | 'document' | 'none';
 
 /** 单个搜索结果 */
 export interface SymbolResult {
@@ -19,12 +19,6 @@ export interface SymbolResult {
     detail?: string;
 }
 
-/** 搜索进度回调 */
-export interface SearchProgress {
-    scanned: number;
-    total: number;
-}
-
 /** 搜索整体结果 */
 export interface SearchOutcome {
     results: SymbolResult[];
@@ -32,19 +26,11 @@ export interface SearchOutcome {
     source: SearchSource;
 }
 
-/** 默认扫描的 C/C++ 源文件扩展名 */
-const DEFAULT_INCLUDE = '**/*.{c,h,cpp,hpp,cc,cxx,hh}';
-/** 排除的目录 */
-const DEFAULT_EXCLUDE = '**/{node_modules,.git,out,dist,build}/**';
-/** 结果上限 */
-const MAX_RESULTS = 5000;
-/** 扫描文件数上限 */
-const MAX_FILES = 20000;
 /**
  * 工作区符号搜索（#）最短查询词长度。
  * 过短查询（如单字符）会触发语言服务器对全索引做模糊匹配，返回海量符号，
  * 内存压力大，是压垮 cpptools 的高危操作（VS Code 内置 # 搜索即强制至少 3 字符）。
- * 不足长度时跳过一级，降级到二级 document / 三级 regex。
+ * 不足长度时跳过一级，降级到二级 document。
  */
 const MIN_WS_QUERY_LEN = 2;
 /** 单次工作区符号搜索超时（ms）：语言服务器卡住时不无限等待 */
@@ -155,143 +141,8 @@ function collectSymbolInformations(
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* 兜底：正则扫描（无语言服务器时使用，类型识别有限）                     */
-/* ------------------------------------------------------------------ */
-const MACRO_REGEX = /^\s*#\s*define\s+([A-Za-z_]\w*)/;
-const STRUCT_REGEX = /^\s*(?:typedef\s+)?struct\s+([A-Za-z_]\w*)\s*\{/;
-const ENUM_REGEX = /^\s*(?:typedef\s+)?enum\s+([A-Za-z_]\w*)\s*\{/;
-const FUNCTION_REGEX =
-    /^\s*(?!(?:if|for|while|switch|do|return|sizeof|else|case)\b)[\w\s\*&]+\s+(?:\*+\s*)*([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(\{|$)/;
-const STORAGE_VAR_REGEX =
-    /^\s*(?:static|extern|const|volatile|register)\s+(?:(?:unsigned|signed|short|long)\s+)*(?:[\w]+\s+)+(?:\*\s*)*([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)?[=;,]/;
-const TOP_VAR_REGEX = /^[A-Za-z_](?:\w*\s+)+(?:\*\s*)*([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)?[=;,]/;
-
-function classifyRegexLine(line: string): { kind: Exclude<SymbolKind, 'all'>; name: string } | null {
-    let m = line.match(MACRO_REGEX);
-    if (m) {
-        return { kind: 'macro', name: m[1] };
-    }
-    m = line.match(STRUCT_REGEX);
-    if (m) {
-        return { kind: 'struct', name: m[1] };
-    }
-    m = line.match(ENUM_REGEX);
-    if (m) {
-        return { kind: 'enum', name: m[1] };
-    }
-    m = line.match(FUNCTION_REGEX);
-    if (m) {
-        return { kind: 'function', name: m[1] };
-    }
-    m = line.match(STORAGE_VAR_REGEX) || line.match(TOP_VAR_REGEX);
-    if (m) {
-        return { kind: 'variable', name: m[1] };
-    }
-    return null;
-}
-
-function buildMatchRegex(kinds: Array<Exclude<SymbolKind, 'all'>>): RegExp {
-    const branches: string[] = [];
-    if (kinds.includes('macro')) {
-        branches.push('#\\s*define\\s+\\w+');
-    }
-    if (kinds.includes('struct')) {
-        branches.push('(?:typedef\\s+)?struct\\s+\\w+\\s*\\{');
-    }
-    if (kinds.includes('enum')) {
-        branches.push('(?:typedef\\s+)?enum\\s+\\w+\\s*\\{');
-    }
-    if (kinds.includes('function')) {
-        branches.push('(?!(?:if|for|while|switch|do|return|sizeof|else|case)\\b)[\\w\\s\\*&]+\\s+(?:\\*+\\s*)*\\w+\\s*\\([^;{}]*\\)\\s*(?:\\{|$)');
-    }
-    if (kinds.includes('variable')) {
-        branches.push(
-            '(?:static|extern|const|volatile|register)\\s+(?:(?:unsigned|signed|short|long)\\s+)*(?:[\\w]+\\s+)+(?:\\*\\s*)*\\w+\\s*(?:\\[[^\\]]*\\]\\s*)?[=;,]'
-        );
-        branches.push('^[A-Za-z_](?:\\w*\\s+)+(?:\\*\\s*)*\\w+\\s*(?:\\[[^\\]]*\\]\\s*)?[=;,]');
-    }
-    if (!branches.length) {
-        return /$^/;
-    }
-    return new RegExp(`^\\s*(?:${branches.join('|')})`, 'm');
-}
-
-/** 正则兜底扫描 */
-async function searchSymbolsByRegex(
-    keyword: string,
-    kind: SymbolKind,
-    token: vscode.CancellationToken,
-    onProgress?: (p: SearchProgress) => void
-): Promise<SymbolResult[]> {
-    const folders = vscode.workspace.workspaceFolders;
-    if (!folders || folders.length === 0) {
-        return [];
-    }
-    const kinds: Array<Exclude<SymbolKind, 'all'>> =
-        kind === 'all' ? ['function', 'macro', 'variable', 'struct', 'enum'] : [kind];
-    const matchRegex = buildMatchRegex(kinds);
-    const lowerKeyword = keyword.trim().toLowerCase();
-
-    const files = await vscode.workspace.findFiles(DEFAULT_INCLUDE, DEFAULT_EXCLUDE, MAX_FILES, token);
-    const total = files.length;
-    const results: SymbolResult[] = [];
-    const seen = new Set<string>();
-    const decoder = new TextDecoder('utf-8');
-
-    for (let i = 0; i < files.length; i++) {
-        if (token.isCancellationRequested || results.length >= MAX_RESULTS) {
-            break;
-        }
-        const file = files[i];
-        let text: string;
-        try {
-            text = decoder.decode(await vscode.workspace.fs.readFile(file));
-        } catch {
-            continue;
-        }
-        if (!matchRegex.test(text)) {
-            onProgress?.({ scanned: i + 1, total });
-            continue;
-        }
-        const relPath = vscode.workspace.asRelativePath(file);
-        const lines = text.split(/\r?\n/);
-        for (let li = 0; li < lines.length; li++) {
-            if (token.isCancellationRequested || results.length >= MAX_RESULTS) {
-                break;
-            }
-            const line = lines[li];
-            if (!matchRegex.test(line)) {
-                continue;
-            }
-            const sym = classifyRegexLine(line);
-            if (!sym || !kinds.includes(sym.kind)) {
-                continue;
-            }
-            if (!keywordsMatch(sym.name, lowerKeyword)) {
-                continue;
-            }
-            const key = `${sym.kind}:${sym.name}:${relPath}`;
-            if (seen.has(key)) {
-                continue;
-            }
-            seen.add(key);
-            results.push({ name: sym.name, kind: sym.kind, file: relPath, line: li });
-        }
-        onProgress?.({ scanned: i + 1, total });
-    }
-
-    results.sort((a, b) => {
-        if (a.file !== b.file) {
-            return a.file.localeCompare(b.file);
-        }
-        return a.line - b.line;
-    });
-    return results;
-}
-
 /** 按类型过滤工作区符号搜索结果（来自 vscode.executeWorkspaceSymbolProvider） */
-function filterWorkspaceSymbols(
+export function filterWorkspaceSymbols(
     infos: readonly vscode.SymbolInformation[],
     kinds: Set<Exclude<SymbolKind, 'all'>>,
     lowerKw: string
@@ -342,17 +193,41 @@ const TIMEOUT_SYMBOL = Symbol('ws-search-timeout');
  * @param p 原始 Promise（ProviderResult 可能是同步值或 thenable）
  * @param ms 超时毫秒数
  */
-function withTimeout<T>(p: T | PromiseLike<T>, ms: number): Promise<T | typeof TIMEOUT_SYMBOL> {
+function withTimeout<T>(
+    p: T | PromiseLike<T>,
+    ms: number,
+    token?: vscode.CancellationToken
+): Promise<T | typeof TIMEOUT_SYMBOL> {
     return new Promise<T | typeof TIMEOUT_SYMBOL>((resolve, reject) => {
-        const timer = setTimeout(() => resolve(TIMEOUT_SYMBOL), ms);
-        Promise.resolve(p).then(
-            (v) => {
-                clearTimeout(timer);
+        let settled = false;
+        const settle = (v: T | typeof TIMEOUT_SYMBOL) => {
+            if (!settled) {
+                settled = true;
                 resolve(v);
-            },
+            }
+        };
+        const timer = setTimeout(() => settle(TIMEOUT_SYMBOL), ms);
+        // 取消即立即返回哨兵：executeWorkspaceSymbolProvider 命令不可取消，
+        // 若不响应 token 取消，连续输入/切换类型会让 host 端长时间阻塞、请求在语言服务器端堆积
+        const sub = token?.onCancellationRequested(() => settle(TIMEOUT_SYMBOL));
+        Promise.resolve(p).then(
+            (v) => settle(v),
             (err) => {
+                if (!settled) {
+                    settled = true;
+                    reject(err);
+                }
+            }
+        );
+        // 结果确定后清理定时器与取消监听
+        void Promise.resolve(p).then(
+            () => {
                 clearTimeout(timer);
-                reject(err);
+                sub?.dispose();
+            },
+            () => {
+                clearTimeout(timer);
+                sub?.dispose();
             }
         );
     });
@@ -469,7 +344,8 @@ async function searchWorkspaceSymbolsViaCommand(
                 'vscode.executeWorkspaceSymbolProvider',
                 query
             ),
-            WS_SEARCH_TIMEOUT_MS
+            WS_SEARCH_TIMEOUT_MS,
+            token
         );
         if (v === TIMEOUT_SYMBOL) {
             return { infos: [], timedOut: true, skipped: false };
@@ -529,7 +405,7 @@ export async function searchWorkspaceSymbols(
         }
         let r: vscode.SymbolInformation[] | null | undefined;
         try {
-            const v = await withTimeout(provider.provideWorkspaceSymbols(query, token), remaining);
+            const v = await withTimeout(provider.provideWorkspaceSymbols(query, token), remaining, token);
             if (v === TIMEOUT_SYMBOL) {
                 timedOut = true;
                 break;
@@ -598,25 +474,26 @@ async function searchOpenDocuments(
 /**
  * 全局搜索符号。
  *
- * 三级链路，逐级降级，保证有结果：
+ * 两级链路，逐级降级：
  *   1. workspace：vscode.executeWorkspaceSymbolProvider（# 全局符号，走语言服务器索引）。
  *      多词关键词取第一个词查询，本地再做多词 AND 过滤。
  *   2. document：当前打开文档的 DocumentSymbol（语言服务器必然有数据）。
- *   3. regex：全工作区正则行扫描兜底（无语言服务器时）。
+ * 两级均无结果时返回空（不再正则兜底，避免大工作区扫描卡顿）。
  * 每级耗时与结果数记录到输出通道，便于诊断。
  *
  * @param keyword     关键词（空串表示不限定）
  * @param kind        符号类型（'all' 表示全部类型）
  * @param token       取消令牌
- * @param onProgress  扫描进度回调（正则兜底时上报）
  * @param onStatus    状态回调（等待语言服务器就位等提示，可空）
+ * @param onWorkspaceRaw 一级 workspace 原始结果回调（非空时触发，供调用方缓存，
+ *                       用于切换类型时本地过滤，避免重复慢搜索；可空）
  */
 export async function searchSymbols(
     keyword: string,
     kind: SymbolKind,
     token: vscode.CancellationToken,
-    onProgress?: (p: SearchProgress) => void,
-    onStatus?: (message: string) => void
+    onStatus?: (message: string) => void,
+    onWorkspaceRaw?: (infos: vscode.SymbolInformation[]) => void
 ): Promise<SearchOutcome> {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) {
@@ -640,6 +517,9 @@ export async function searchSymbols(
     if (query) {
         const t0 = Date.now();
         const ws = await searchWorkspaceSymbols(query, token, onStatus);
+        if (ws.infos.length > 0) {
+            onWorkspaceRaw?.(ws.infos);
+        }
         const elapsed = Date.now() - t0;
         if (ws.skipped) {
             log(
@@ -662,7 +542,7 @@ export async function searchSymbols(
                     `原始 ${ws.infos.length} 条, 过滤后 ${results.length} 条`
             );
             // 注意：必须仅在过滤后 results 非空时返回。若原始有数据但过滤后为空
-            // （多词 AND 或类型筛选不匹配），继续降级到二级/三级，否则会假"未找到"。
+            // （多词 AND 或类型筛选不匹配），继续降级到二级，否则会假"未找到"。
             if (results.length > 0) {
                 return { results, source: 'workspace' };
             }
@@ -685,9 +565,7 @@ export async function searchSymbols(
         }
     }
 
-    // 三级：正则全工作区扫描
-    const t2 = Date.now();
-    const fallback = await searchSymbolsByRegex(keyword, kind, token, onProgress);
-    log(`[符号搜索] 三级 正则扫描: 耗时 ${Date.now() - t2}ms, 结果 ${fallback.length} 条`);
-    return { results: fallback, source: fallback.length > 0 ? 'regex' : 'none' };
+    // 语言服务器（workspace + document）均无结果：不再正则兜底，直接返回空
+    log('[符号搜索] 语言服务器无结果，返回空');
+    return { results: [], source: 'none' };
 }
