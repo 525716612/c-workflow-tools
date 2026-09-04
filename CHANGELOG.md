@@ -2,6 +2,16 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.10] - 2026-09-04
+
+### Fixed
+
+- 修复：搜索无结果时耗时过长、期间切换过滤类型不生效。原因为语言服务器 workspace 符号搜索命令不可取消、连续输入/切换类型时请求在 cpptools 端堆积，且存在全工作区正则兜底扫描导致大型工程卡顿
+- 移除正则兜底全工作区扫描：语言服务器（workspace + document）无结果时直接返回空，不再逐文件读盘扫描，从根上消除兜底卡顿
+- 语言服务器 workspace 搜索支持取消与超时即返回，避免请求堆积压垮 cpptools
+- 切换过滤类型且关键词未变时，基于缓存的一级 workspace 结果本地过滤秒出，不再重复触发慢速搜索
+- 无结果提示改为中性建议（更换关键词/切换类型），不再引导检查语言服务器
+
 ## [0.0.9] - 2026-09-02
 
 ### Added

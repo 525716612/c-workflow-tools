@@ -157,7 +157,7 @@ async function buildDiffTree(
 async function createZip(srcDir: string, zipPath: string): Promise<void> {
     // 懒加载 archiver：其依赖链（zip-stream/compress-commons/async/glob 等）体积较大，
     // 仅在用户真正执行「打包差异文件」时才加载，避免拖慢插件启动。
-    // 配合 esbuild 的 external 配置，archiver 不再打入主 bundle。
+    // esbuild 已将其 bundle 进 dist，无需随 vsix 携带 node_modules。
     const archiver = require('archiver') as typeof import('archiver');
     return new Promise<void>((resolve, reject) => {
         const output = fs.createWriteStream(zipPath);

@@ -3,9 +3,8 @@
 src/**
 out/**
 .git/**
-# @vscode/codicons 是 dev 环境的 extraneous 孤儿包（测试工具依赖被 npm 扁平化提升），
-# 不在 archiver 生产依赖链中，不应打进 vsix
-node_modules/@vscode/codicons/**
+# archiver 已 bundle 进 dist/extension.js，运行时不再需要 node_modules
+node_modules/**
 .gitignore
 DEVELOPMENT.md
 esbuild.js
