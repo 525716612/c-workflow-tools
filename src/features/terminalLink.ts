@@ -143,25 +143,95 @@ function basenameOf(p: string): string {
 }
 
 /**
+ * 规范化并去掉路径开头/中部的 . 与 .. 段。
+ * 终端的 ../ 相对 cwd 向上，落到工作区做后缀匹配/磁盘直查时无意义，需剥掉。
+ */
+function stripDotSegments(p: string): string {
+    return path.posix.normalize(p).replace(/^(?:\.\.\/)*/, '');
+}
+
+/** compile_commands.json 缓存：键=文件绝对路径，值=目录列表+mtime */
+const ccCache = new Map<string, { mtimeMs: number; buildDirs: string[] }>();
+
+/**
+ * 收集各工作区根 compile_commands.json 中记录的构建目录（编译器实际运行目录）。
+ * 编译器按该目录打印相对路径（如 ../COMMON/.../UserPref.c），用它解析即可命中正在编译的文件，
+ * 终端未启用 shell 集成（拿不到 cwd）时的可靠替代。
+ */
+function getCompileCommandsBuildDirs(): string[] {
+    const result: string[] = [];
+    for (const wf of vscode.workspace.workspaceFolders ?? []) {
+        const cc = path.join(wf.uri.fsPath, 'compile_commands.json');
+        let st: fs.Stats;
+        try {
+            st = fs.statSync(cc);
+        } catch {
+            continue;
+        }
+        const cached = ccCache.get(cc);
+        if (cached && cached.mtimeMs === st.mtimeMs) {
+            result.push(...cached.buildDirs);
+            continue;
+        }
+        const buildDirs: string[] = [];
+        try {
+            const raw = JSON.parse(fs.readFileSync(cc, 'utf8'));
+            const seen = new Set<string>();
+            if (Array.isArray(raw)) {
+                for (const e of raw) {
+                    if (e && typeof e.directory === 'string' && e.directory) {
+                        const key = e.directory.toLowerCase();
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            buildDirs.push(e.directory);
+                        }
+                    }
+                }
+            }
+        } catch {
+            // 解析失败按空处理，下次 mtime 变化再重试
+        }
+        ccCache.set(cc, { mtimeMs: st.mtimeMs, buildDirs });
+        result.push(...buildDirs);
+    }
+    return result;
+}
+
+/**
  * 在磁盘上查找文件：
  * - ~ 展开为家目录
  * - 绝对路径直接判断
- * - 相对路径依次尝试终端 cwd、各工作区根目录
+ * - 相对路径依次尝试终端 cwd、compile_commands.json 构建目录、各工作区根目录
+ * - 带 ../ 的路径直接 join 可能对不上（cwd 层级比打印路径深），再试去掉 . ../ 段后的路径
  */
 function findOnDisk(p: string, cwd: vscode.Uri | undefined): vscode.Uri | undefined {
-    let candidates: string[] = [];
+    const candidates: string[] = [];
     if (p.startsWith('~')) {
         candidates.push(path.join(os.homedir(), p.slice(1)));
     } else if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith('/')) {
         candidates.push(p);
     } else {
-        const bases: (string | undefined)[] = [cwd?.fsPath];
+        const norm = p.replace(/\\/g, '/');
+        const stripped = stripDotSegments(norm);
+        const seenBases = new Set<string>();
+        const bases: string[] = [];
+        const addBase = (b?: string): void => {
+            if (b && !seenBases.has(b.toLowerCase())) {
+                seenBases.add(b.toLowerCase());
+                bases.push(b);
+            }
+        };
+        addBase(cwd?.fsPath);
+        for (const d of getCompileCommandsBuildDirs()) {
+            addBase(d);
+        }
         for (const wf of vscode.workspace.workspaceFolders ?? []) {
-            bases.push(wf.uri.fsPath);
+            addBase(wf.uri.fsPath);
         }
         for (const b of bases) {
-            if (b) {
-                candidates.push(path.join(b, p));
+            candidates.push(path.join(b, norm));
+            if (stripped !== norm) {
+                candidates.push(path.join(b, stripped));
             }
         }
     }
@@ -297,29 +367,101 @@ function escapeGlob(name: string): string {
     return name.replace(/([\[\]{}*?])/g, '\\$1');
 }
 
-/** 在工作区中按文件名搜索（最多返回第一个匹配） */
-async function findInWorkspace(baseName: string): Promise<vscode.Uri | undefined> {
+/**
+ * 在工作区中按文件名搜索全部匹配。
+ * exclude 传 null：官方逃生口，无视 files.exclude / search.exclude / .gitignore，
+ * 否则被 settings 排除的目录（如构建产物源文件）会搜不到。
+ */
+async function findAllInWorkspace(baseName: string): Promise<vscode.Uri[]> {
     if (!baseName || baseName === '.' || baseName === '..') {
-        return undefined;
+        return [];
     }
     try {
-        const matches = await vscode.workspace.findFiles(
-            `**/${escapeGlob(baseName)}`,
-            '**/{node_modules,.git}/**',
-            20,
-        );
-        return matches[0];
+        return await vscode.workspace.findFiles(`**/${escapeGlob(baseName)}`, null, 50);
     } catch {
-        return undefined;
+        return [];
     }
 }
 
 /**
- * 按源文件名搜索工作区：
+ * 对候选文件排序：
+ * - 相对路径以目标后缀结尾（如 src/main.c）得分最高 → 构建输出通常保留源相对目录，可唯一锁定正在编译的文件
+ * - 其次接近终端 cwd（正在编译的目录）优先
+ */
+function rankCandidates(
+    uris: vscode.Uri[],
+    relSuffix: string,
+    cwd: vscode.Uri | undefined
+): { uri: vscode.Uri; rel: string; score: number }[] {
+    const cwdPath = cwd ? cwd.fsPath.replace(/\\/g, '/').toLowerCase() : '';
+    const scored = uris.map((uri) => {
+        const folder = vscode.workspace.getWorkspaceFolder(uri);
+        const rel = folder
+            ? path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, '/').toLowerCase()
+            : path.basename(uri.fsPath).toLowerCase();
+        let score = 0;
+        if (relSuffix && rel.endsWith(relSuffix)) {
+            score += 100;
+        }
+        if (cwdPath) {
+            const abs = uri.fsPath.replace(/\\/g, '/').toLowerCase();
+            if (abs.startsWith(cwdPath + '/')) {
+                score += 40 - Math.min(20, abs.slice(cwdPath.length + 1).split('/').length);
+            }
+        }
+        return { uri, rel, score };
+    });
+    scored.sort((a, b) => b.score - a.score || a.rel.localeCompare(b.rel));
+    return scored;
+}
+
+/** 多个同名候选歧义时弹出选择器让用户挑选（替代随机跳转） */
+async function pickFromCandidates(uris: vscode.Uri[]): Promise<vscode.Uri | undefined> {
+    const items = uris.map((uri) => ({
+        label: basenameOf(uri.fsPath),
+        description: vscode.workspace.asRelativePath(uri, true),
+        uri,
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: '存在多个同名文件，请选择要打开的文件',
+        matchOnDescription: true,
+    });
+    return picked?.uri;
+}
+
+/**
+ * 按文件名全工作区搜索并择优：
+ * - 唯一候选或最高分唯一 → 直接采用
+ * - 多个同等候选 → 弹出选择器让用户挑选
+ */
+async function resolveBySearch(target: string, cwd: vscode.Uri | undefined): Promise<vscode.Uri | undefined> {
+    const baseName = basenameOf(target);
+    if (!baseName || baseName === '.' || baseName === '..') {
+        return undefined;
+    }
+    const matches = await findAllInWorkspace(baseName);
+    if (matches.length === 0) {
+        return undefined;
+    }
+    // 后缀匹配前剥掉 . ../ 段（../COMMON/.../UserPref.c → COMMON/.../UserPref.c）
+    const relSuffix = stripDotSegments(target.replace(/\\/g, '/')).toLowerCase();
+    if (!relSuffix) {
+        return undefined;
+    }
+    const ranked = rankCandidates(matches, relSuffix, cwd);
+    if (ranked.length === 1 || ranked[0].score > ranked[1].score) {
+        return ranked[0].uri;
+    }
+    return pickFromCandidates(ranked.map((r) => r.uri));
+}
+
+/**
+ * 按源文件名搜索工作区（无视忽略设置）：
  * - 对象文件（.o/.obj）先取去掉扩展名的源文件名（foo.c.o → foo.c）
  * - 无扩展名的词干补充常见源码扩展名
+ * - 相对路径保留目录段做后缀匹配（src/main.c.o → src/main.c）
  */
-async function findSourceInWorkspace(p: string): Promise<vscode.Uri | undefined> {
+async function findSourceInWorkspace(p: string, cwd: vscode.Uri | undefined): Promise<vscode.Uri | undefined> {
     const base = basenameOf(p);
     const stems: string[] = [];
     if (OBJECT_EXT_RE.test(base)) {
@@ -333,8 +475,11 @@ async function findSourceInWorkspace(p: string): Promise<vscode.Uri | undefined>
     } else {
         stems.push(base);
     }
+    const normP = p.replace(/\\/g, '/');
+    const isAbs = /^[A-Za-z]:[\\/]/.test(normP) || normP.startsWith('/') || normP.startsWith('~');
+    const dir = isAbs ? '' : normP.slice(0, normP.lastIndexOf('/') + 1);
     for (const s of stems) {
-        const found = await findInWorkspace(s);
+        const found = await resolveBySearch(dir + s, cwd);
         if (found) {
             return found;
         }
@@ -347,7 +492,7 @@ async function findSourceInWorkspace(p: string): Promise<vscode.Uri | undefined>
  * 1. 磁盘直查（绝对/~ /相对 cwd/工作区根目录）
  * 2. CMake/ninja 构建产物裁剪后重试（含工作区搜索）
  * 3. 对象文件按源文件名搜索
- * 4. 原路径 basename 全工作区兜底搜索
+ * 4. 工作区全量搜索（无视忽略设置，按相对路径后缀/就近 cwd 择优）
  */
 async function resolveFileUri(filePath: string, cwd: vscode.Uri | undefined): Promise<vscode.Uri | undefined> {
     // 1) 磁盘直查
@@ -363,7 +508,7 @@ async function resolveFileUri(filePath: string, cwd: vscode.Uri | undefined): Pr
         if (direct2) {
             return direct2;
         }
-        const viaBase = await findSourceInWorkspace(cropped);
+        const viaBase = await findSourceInWorkspace(cropped, cwd);
         if (viaBase) {
             return viaBase;
         }
@@ -371,14 +516,14 @@ async function resolveFileUri(filePath: string, cwd: vscode.Uri | undefined): Pr
 
     // 3) 对象文件：去掉扩展名后按源文件名搜索
     if (OBJECT_EXT_RE.test(filePath)) {
-        const viaStem = await findSourceInWorkspace(filePath);
+        const viaStem = await findSourceInWorkspace(filePath, cwd);
         if (viaStem) {
             return viaStem;
         }
     }
 
-    // 4) 原路径 basename 全工作区兜底搜索
-    return findInWorkspace(basenameOf(filePath));
+    // 4) 工作区全量搜索兜底（无视忽略设置）
+    return resolveBySearch(filePath, cwd);
 }
 
 /** 打开文件并跳转到指定行/列 */

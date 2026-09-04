@@ -2,6 +2,14 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.11] - 2026-09-04
+
+### Fixed
+
+- 修复：Ctrl+点击终端路径在同名文件时随机跳转，无法跳到正在编译的文件。工作区兜底搜索改为无视 `files.exclude` / `search.exclude` / `.gitignore`（`findFiles` 的 exclude 传 `null`，官方逃生口），被 settings 排除的源文件也能搜到
+- 修复：带 `../` 前缀的相对路径（如 `../COMMON/OSD/DYNAMIC_ANT_GAMEING/USERDATA/UserPref.c`）无法定位。该类路径相对**构建目录**而非工作区根，现新增按 `compile_commands.json` 的 `directory` 字段解析（mtime 缓存），未启用 shell 集成时也能精确命中正在编译的文件；`../` 相对 cwd 解析也支持剥掉 `.`/`..` 段
+- 改进：同名候选择优 —— 相对路径后缀匹配（`src/main.c`）优先，其次接近终端 cwd；多个同等候选时弹出选择器让用户挑选，不再随机跳转
+
 ## [0.0.10] - 2026-09-04
 
 ### Fixed
