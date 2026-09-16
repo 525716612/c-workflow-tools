@@ -2,7 +2,7 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
-## [0.0.12] - 2026-09-16
+## [0.1.0] - 2026-09-16
 
 ### Added
 
