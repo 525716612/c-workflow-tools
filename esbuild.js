@@ -25,8 +25,12 @@ const esbuildProblemMatcherPlugin = {
 
 async function main() {
 	const ctx = await esbuild.context({
+		// 两个入口：
+		//   extension.ts  -> dist/extension.js  插件本体
+		//   aiReview/cli.ts -> dist/cli.js      AI 审查引擎的独立运行入口（脱离 IDE 可跑，便于自测/排障）
 		entryPoints: [
-			'src/extension.ts'
+			'src/extension.ts',
+			'src/aiReview/cli.ts'
 		],
 		bundle: true,
 		format: 'cjs',
@@ -34,7 +38,8 @@ async function main() {
 		sourcemap: !production,
 		sourcesContent: false,
 		platform: 'node',
-		outfile: 'dist/extension.js',
+		outdir: 'dist',
+		entryNames: '[name]',
 		external: ['vscode'],
 		logLevel: 'silent',
 		plugins: [

@@ -25,6 +25,20 @@ const ACTIONS: WorkflowAction[] = [
         command: 'c-workflow-tools.packageDiff',
         icon: 'package',
     },
+    {
+        id: 'aiReviewCommit',
+        label: 'AI 审查并提交',
+        description: '提交前审查暂存区，有问题先拦一下',
+        command: 'c-workflow-tools.aiReviewCommit',
+        icon: 'shield',
+    },
+    {
+        id: 'aiReviewStatus',
+        label: 'AI 审查状态',
+        description: '查看启动条件与配置',
+        command: 'c-workflow-tools.aiReviewStatus',
+        icon: 'checklist',
+    },
 ];
 
 /** 视图树节点：点击执行绑定的命令 */

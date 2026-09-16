@@ -3,6 +3,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { log, logError } from '../outputChannel';
+import { killProcessTree } from './proc';
 
 /** git 差异文件状态 */
 export type GitChangeStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T' | 'U';
@@ -57,24 +58,36 @@ export function runGitSync(args: string[], cwd: string, timeout = 120000): Promi
         });
         let stdout = '';
         let stderr = '';
+        let settled = false;
+        // 只结算一次：超时后 close 事件仍会到达，重复 settle 会产生多余 reject
+        const settle = (action: () => void): void => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            clearTimeout(timer);
+            action();
+        };
         const timer = setTimeout(() => {
-            child.kill('SIGKILL');
-            reject(new Error(`git 命令超时：git ${args.join(' ')}`));
+            // Windows 下 shell:true 起的是 cmd.exe，只 kill 它会留下孤儿 git 进程
+            killProcessTree(child);
+            settle(() => reject(new Error(`git 命令超时：git ${args.join(' ')}`)));
         }, timeout);
 
         child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-        child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-        child.on('error', (err) => {
-            clearTimeout(timer);
-            reject(err);
+        child.stderr.on('data', (d: Buffer) => {
+            // stderr 只用于错误信息，限量避免异常输出堆积
+            if (stderr.length < 64 * 1024) { stderr += d.toString(); }
         });
+        child.on('error', (err) => settle(() => reject(err)));
         child.on('close', (code) => {
-            clearTimeout(timer);
-            if (code === 0) {
-                resolve(stdout.replace(/\s+$/, ''));
-            } else {
-                reject(new Error(stderr.trim() || `git 退出码 ${code}：git ${args.join(' ')}`));
-            }
+            settle(() => {
+                if (code === 0) {
+                    resolve(stdout.replace(/\s+$/, ''));
+                } else {
+                    reject(new Error(stderr.trim() || `git 退出码 ${code}：git ${args.join(' ')}`));
+                }
+            });
         });
     });
 }
@@ -153,6 +166,9 @@ export async function getDiffBetween(ref1: string, ref2: string, cwd: string): P
 /** Windows 命令行长度预算（CreateProcess 上限 32767，git 内部重派发更保守，留足余量） */
 const ARGV_BUDGET = 7000;
 
+/** 单批解压超时：大仓库可能较慢，但绝不能无限等待（会一直占着子进程与管道） */
+const EXTRACT_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * 从指定节点批量提取文件到磁盘（纯 git 原生命令实现）。
  * 流程：
@@ -201,33 +217,78 @@ export async function extractFilesFromRef(
 
     // 3) 分批 git archive（流中只含所需文件）-> 管道给系统 tar 解压
     for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        const archive = spawn('git', ['archive', '--format=tar', ref, ...chunk], { cwd, windowsHide: true });
+        await extractChunk(cwd, ref, chunks[i], targetRoot);
+        onProgress?.(i + 1, chunks.length);
+    }
+}
+
+/**
+ * 单批解压：`git archive` 的输出管道给 `tar`。
+ *
+ * 必须处理的三个坑（否则扩展宿主会崩或留下孤儿进程）：
+ *  - 管道两端（archive.stdout / tar.stdin）都要挂 'error'：对端提前退出产生的 EPIPE
+ *    属于未处理的 'error' 事件，Node 会直接终止进程；
+ *  - 任一端失败/超时要 kill 另一端，否则残留的 tar 会一直挂在 stdin 上（进程+句柄泄漏）；
+ *  - 整体要有超时兜底，不能让一个卡住的解压永久占着子进程。
+ */
+function extractChunk(cwd: string, ref: string, paths: string[], targetRoot: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        const archive = spawn('git', ['archive', '--format=tar', ref, ...paths], { cwd, windowsHide: true });
         const tar = spawn('tar', ['-xf', '-', '-C', targetRoot], { windowsHide: true });
 
         let stderr = '';
-        archive.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+        let settled = false;
+        let timer: NodeJS.Timeout | undefined;
+
+        const archiveDone = new Promise<number | null>((r) => archive.on('close', (code) => r(code)));
+        const tarDone = new Promise<number | null>((r) => tar.on('close', (code) => r(code)));
+
+        const fail = (message: string): void => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (timer) {
+                clearTimeout(timer);
+            }
+            killProcessTree(archive);
+            killProcessTree(tar);
+            reject(new Error(message));
+        };
+
+        timer = setTimeout(() => fail(`解压超时（${EXTRACT_TIMEOUT_MS / 1000}s）：${ref}`), EXTRACT_TIMEOUT_MS);
+
+        archive.stderr.on('data', (d: Buffer) => {
+            if (stderr.length < 64 * 1024) { stderr += d.toString(); }
+        });
+        archive.on('error', (e: Error) => fail(`git archive 启动失败：${e.message}`));
+        tar.on('error', (e: Error) => fail(`tar 启动失败：${e.message}`));
+        archive.stdout.on('error', (e: Error) => fail(`git archive 输出流错误：${e.message}`));
+        tar.stdin.on('error', (e: Error) => fail(`tar 输入流错误：${e.message}`));
+
         archive.stdout.pipe(tar.stdin);
 
-        const [aCode, tCode] = await Promise.all([
-            new Promise<number | null>((resolve, reject) => {
-                archive.on('error', reject);
-                archive.on('close', (code) => resolve(code));
-            }),
-            new Promise<number | null>((resolve, reject) => {
-                tar.on('error', reject);
-                tar.on('close', (code) => resolve(code));
-            }),
-        ]);
-
-        if (aCode !== 0) {
-            throw new Error(`git archive 退出码 ${aCode}：${stderr.trim() || '未知错误'}`);
-        }
-        if (tCode !== 0) {
-            throw new Error(`tar 解压失败（退出码 ${tCode}）`);
-        }
-        onProgress?.(i + 1, chunks.length);
-    }
+        void Promise.all([archiveDone, tarDone])
+            .then(([aCode, tCode]) => {
+                if (settled) {
+                    return;
+                }
+                if (aCode !== 0) {
+                    fail(`git archive 退出码 ${aCode}：${stderr.trim() || '未知错误'}`);
+                    return;
+                }
+                if (tCode !== 0) {
+                    fail(`tar 解压失败（退出码 ${tCode}）`);
+                    return;
+                }
+                settled = true;
+                if (timer) {
+                    clearTimeout(timer);
+                }
+                resolve();
+            })
+            .catch((e: Error) => fail(e.message));
+    });
 }
 
 /**

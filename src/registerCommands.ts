@@ -3,6 +3,11 @@ import { selectMacroBlock } from './features/selectMacroBlock';
 import { gitDifftoolCompare } from './features/gitDifftool';
 import { packageDiff } from './features/packageDiff';
 import { diagnoseSymbolSearch } from './features/symbolSearchDiagnose';
+import {
+    showAiReviewStatus, cleanLegacyEnvironment,
+    AI_REVIEW_STATUS_COMMAND, AI_REVIEW_CLEAN_LEGACY_COMMAND,
+} from './features/aiReviewSetup';
+import { reviewAndCommit } from './features/aiReviewCommit';
 
 /**
  * 命令注册中心（可扩展点）。
@@ -29,6 +34,23 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         // 功能4：诊断符号搜索（语言服务器状态与搜索统计）
         vscode.commands.registerCommand('c-workflow-tools.diagnoseSymbolSearch', () => {
             diagnoseSymbolSearch();
+        }),
+
+        // 功能5：AI 审查（引擎内置在插件里，只依赖 codebuddy CLI）
+
+        // 审查并提交：提交前审暂存区，有问题先拦一下 —— 唯一能拦截的入口
+        vscode.commands.registerCommand('c-workflow-tools.aiReviewCommit', () => {
+            reviewAndCommit(context);
+        }),
+
+        // 查看启动条件与本机配置（是否找到 CLI、监听哪些仓库、各范围开关）
+        vscode.commands.registerCommand(AI_REVIEW_STATUS_COMMAND, () => {
+            showAiReviewStatus(context);
+        }),
+
+        // 清理旧的 Python 钩子环境（它仍在生效时会与插件重复审查）
+        vscode.commands.registerCommand(AI_REVIEW_CLEAN_LEGACY_COMMAND, () => {
+            cleanLegacyEnvironment();
         })
     );
 }

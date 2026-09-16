@@ -2,6 +2,37 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.0.12] - 2026-09-16
+
+### Added
+
+- 新增：AI 代码审查（内置引擎，纯 TS/Node，不依赖 Python 与 git 钩子，后端调用本机 `codebuddy` / `cbc` CLI）
+  - 提交前审查：`C Workflow: AI 审查并提交`（同时挂到源代码管理标题栏），审查暂存区，达到阻断级别先确认再提交
+  - 提交后审查：监听 HEAD 变化，按 reflog 与父提交关系区分为提交/合并/变基/同步，只审真正改动的提交与人工解冲突的文件，干净合并/变基不调用 AI
+  - 新增命令：`AI 审查状态`（启动条件与配置自检）、`清理旧的 AI 审查钩子环境`（一键停用旧的全局 git 钩子，避免重复审查）
+  - 新增 `c-workflow-tools.aiReview.*` 配置项（开关、CLI 路径、各场景开关、阻断级别、通知方式、超时与文件/行数上限、报告语言）
+  - 审查报告输出到 `<git-common-dir>/ai-review/`：`last-report.md`、`last-status.json`、`history.log`
+  - 审查规则三层覆盖：内置清单 → 全局 `<globalStorage>/review-rules.md` → 仓库 `.ai-review-rules.md`
+  - 独立命令行入口 `dist/cli.js`，可脱离 IDE 自测与排障
+  - 启动闸门：工作区含 git 仓库且本机可用 codebuddy CLI 才启动，否则不监听、不写文件、不弹窗
+- 打包差异文件：打包前对「修改前 → 修改后」方向做二次确认（第二个节点更早时把「交换」置顶为推荐项），避免目录内容左右互换
+
+### Fixed
+
+- 修复：打包差异文件时，节点中新增/删除的文件会让 `git archive` 直接 fatal，导致整体打包失败。现先用 `git ls-tree -r -z` 预过滤真实存在的文件，并按命令行长度预算分批提取
+- 修复：Windows 下取消/超时只杀掉外层 `cmd.exe`，真正的 git/python 变成孤儿进程。新增 `killProcessTree()`（Windows 用 `taskkill /PID /T /F`），超时与取消均结束整棵进程树
+- 修复：提取管道一端失败时另一端残留挂起（EPIPE/超时未清理），现两端互相关联并在失败时 kill 对方，另加超时兜底
+- 修复：选择引用时 `dispose()` 触发 `onDidHide` 抢先以 `undefined` 结算，导致选择结果丢失或误判为取消
+- 修复：符号搜索视图在 `retainContextWhenHidden` 下被重新 `resolveWebviewView` 时旧监听未清理，同一条消息被重复处理（重复搜索/重复打开文件），现统一在 dispose 时清理
+- 修复：符号搜索诊断命令每次新建的 `CancellationTokenSource` 未释放，导致监听累积
+- 修复：zip 写出失败时写流与 archiver 句柄未释放
+
+### Changed
+
+- 打包差异文件：进度细化为「提取 80% / 压缩 20%」并按批次上报；差异列表启用 `--find-renames`，重命名文件在「修改前」按旧路径提取
+- 终端路径链接：新增文件存在性缓存（命中 30s / 未命中 2s / 上限 4000 条自动清空），避免构建日志刷屏时主线程 stat 卡顿
+- 构建：esbuild 新增第二个入口 `src/aiReview/cli.ts` → `dist/cli.js`，依赖重新 bundle 进 dist
+
 ## [0.0.11] - 2026-09-04
 
 ### Fixed

@@ -126,13 +126,37 @@ function parseToken(raw: string): ParsedPath | null {
     return { path: stripped, line: undefined, column: undefined };
 }
 
-/** 判断 p 是否为真实存在的文件 */
+/**
+ * 文件存在性缓存。
+ * 终端每渲染一行都会解析路径，同一行/相邻行的 token 会反复 stat 相同候选路径，
+ * 这些 statSync 全跑在扩展宿主主线程上，构建日志刷屏时会造成明显卡顿。
+ * 正结果缓存久些（文件存在是稳定事实），负结果短些（文件可能刚被编译出来）。
+ */
+const statCache = new Map<string, { exist: boolean; at: number }>();
+const STAT_HIT_TTL_MS = 30000;
+const STAT_MISS_TTL_MS = 2000;
+/** 缓存条数上限，避免长时间运行无界增长 */
+const STAT_CACHE_MAX = 4000;
+
+/** 判断 p 是否为真实存在的文件（带短期缓存） */
 function isFile(p: string): boolean {
-    try {
-        return fs.statSync(p).isFile();
-    } catch {
-        return false;
+    const key = p.toLowerCase();
+    const now = Date.now();
+    const cached = statCache.get(key);
+    if (cached && now - cached.at < (cached.exist ? STAT_HIT_TTL_MS : STAT_MISS_TTL_MS)) {
+        return cached.exist;
     }
+    let exist = false;
+    try {
+        exist = fs.statSync(p).isFile();
+    } catch {
+        exist = false;
+    }
+    if (statCache.size >= STAT_CACHE_MAX) {
+        statCache.clear();
+    }
+    statCache.set(key, { exist, at: now });
+    return exist;
 }
 
 /** 取路径的 basename（同时兼容 / 与 \ 分隔符） */
@@ -585,7 +609,14 @@ export function registerTerminalLink(context: vscode.ExtensionContext): vscode.D
             return handleTerminalLink(link);
         },
     });
-    context.subscriptions.push(provider);
+    context.subscriptions.push(
+        provider,
+        // 工作区变化后 compile_commands.json 与磁盘缓存都可能失效，清掉避免残留旧条目
+        vscode.workspace.onDidChangeWorkspaceFolders(() => {
+            ccCache.clear();
+            statCache.clear();
+        })
+    );
     log('终端路径链接功能已注册（Ctrl+点击路径直接打开文件）');
     return provider;
 }

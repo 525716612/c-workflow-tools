@@ -33,6 +33,12 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
 
     private view?: vscode.WebviewView;
     private searchToken?: vscode.CancellationTokenSource;
+    /**
+     * 本次 resolveWebviewView 注册的监听。
+     * retainContextWhenHidden + 视图被拖动/重新显示时 VS Code 会再次调用 resolveWebviewView，
+     * 不清理旧监听会导致同一条消息被处理多次（重复搜索、重复打开文件），并随每次 resolve 累积。
+     */
+    private viewDisposables: vscode.Disposable[] = [];
     /** 最近一次一级 workspace 原始结果缓存（切换类型时本地过滤，避免重复慢搜索） */
     private lastWsKeyword?: string;
     private lastWsInfos?: vscode.SymbolInformation[];
@@ -42,6 +48,8 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
     constructor(private readonly extensionUri: vscode.Uri) {}
 
     resolveWebviewView(webviewView: vscode.WebviewView): void {
+        // 再次 resolve（视图被移动/重新显示）时先清掉上一次的监听，避免消息重复处理
+        this.disposeViewListeners();
         this.view = webviewView;
         webviewView.webview.options = {
             enableScripts: true,
@@ -50,21 +58,58 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
         };
         webviewView.webview.html = this.getHtml(webviewView.webview);
 
-        webviewView.webview.onDidReceiveMessage((msg: WebviewMessage) => {
-            switch (msg.type) {
-                case 'search':
-                    this.runSearch(msg.keyword, msg.symbolType);
-                    break;
-                case 'open':
-                    this.openSymbol(msg.file, msg.line);
-                    break;
-                case 'ready':
-                    log('[符号搜索] webview 已就绪');
-                    break;
-                default:
-                    log(`[符号搜索] 收到未知消息: ${JSON.stringify(msg)}`);
+        this.viewDisposables.push(
+            webviewView.webview.onDidReceiveMessage((msg: WebviewMessage) => {
+                switch (msg.type) {
+                    case 'search':
+                        this.runSearch(msg.keyword, msg.symbolType);
+                        break;
+                    case 'open':
+                        this.openSymbol(msg.file, msg.line);
+                        break;
+                    case 'ready':
+                        log('[符号搜索] webview 已就绪');
+                        break;
+                    default:
+                        log(`[符号搜索] 收到未知消息: ${JSON.stringify(msg)}`);
+                }
+            }),
+            webviewView.onDidDispose(() => {
+                if (this.view === webviewView) {
+                    this.view = undefined;
+                }
+                this.disposeViewListeners();
+            })
+        );
+    }
+
+    /** 释放本视图注册的监听与在飞的搜索（可重复调用） */
+    private disposeViewListeners(): void {
+        for (const disposable of this.viewDisposables) {
+            try {
+                disposable.dispose();
+            } catch {
+                // 重复释放忽略
             }
-        });
+        }
+        this.viewDisposables = [];
+        this.cancelSearch();
+    }
+
+    /** 取消并释放当前搜索：CancellationTokenSource 不 dispose 会残留监听 */
+    private cancelSearch(): void {
+        const token = this.searchToken;
+        this.searchToken = undefined;
+        if (token) {
+            token.cancel();
+            token.dispose();
+        }
+    }
+
+    /** 插件侧统一清理入口（deactivate / 视图注销时调用） */
+    dispose(): void {
+        this.disposeViewListeners();
+        this.view = undefined;
     }
 
     /** 执行全局符号搜索（自动取消上一次未完成的搜索） */
@@ -90,7 +135,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
             );
             const filtered = filterWorkspaceSymbols(this.lastWsInfos, kinds, kw.toLowerCase());
             if (filtered.length > 0) {
-                this.searchToken?.cancel();
+                this.cancelSearch();
                 this.lastWsKind = symbolType;
                 const truncated = filtered.length > MAX_RENDER;
                 view.webview.postMessage({
@@ -104,7 +149,7 @@ export class SymbolSearchViewProvider implements vscode.WebviewViewProvider {
                 return;
             }
         }
-        this.searchToken?.cancel();
+        this.cancelSearch();
         const token = new vscode.CancellationTokenSource();
         this.searchToken = token;
 
@@ -612,6 +657,8 @@ export function registerSymbolSearchView(context: vscode.ExtensionContext): void
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(SymbolSearchViewProvider.viewType, provider, {
             webviewOptions: { retainContextWhenHidden: true },
-        })
+        }),
+        // 插件卸载/重启时释放 provider 内部监听与在飞搜索
+        new vscode.Disposable(() => provider.dispose())
     );
 }

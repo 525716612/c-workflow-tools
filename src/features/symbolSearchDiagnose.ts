@@ -35,9 +35,11 @@ export async function diagnoseSymbolSearch(): Promise<void> {
     // 4. 工作区符号搜索（#）
     // 与 searchSymbols 一致：直调 provider 并传 token（executeCommand 版本不可取消、
     // 无超时，反复运行诊断同样可能堆积请求压垮语言服务器），固定查询词 'app'。
+    // 诊断用的取消源必须释放：每次命令都 new 一个 CTS 而不 dispose，其监听会残留累积
+    const wsToken = new vscode.CancellationTokenSource();
     try {
         const t0 = Date.now();
-        const ws = await searchWorkspaceSymbols('app', new vscode.CancellationTokenSource().token, (msg) => log(msg));
+        const ws = await searchWorkspaceSymbols('app', wsToken.token, (msg) => log(msg));
         const elapsed = Date.now() - t0;
         if (ws.skipped) {
             log(`工作区符号搜索(#): 查询词过短，跳过（${elapsed}ms）`);
@@ -57,6 +59,8 @@ export async function diagnoseSymbolSearch(): Promise<void> {
         }
     } catch (err) {
         log(`工作区符号搜索(#): 异常 ${String(err)}`);
+    } finally {
+        wsToken.dispose();
     }
 
     // 5. 打开文档的 document symbol

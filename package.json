@@ -3,7 +3,7 @@
   "displayName": "C Workflow Tools",
   "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、全局符号搜索、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
   "publisher": "cxy",
-  "version": "0.0.11",
+  "version": "0.0.12",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -39,7 +39,10 @@
     "onCommand:c-workflow-tools.selectMacroBlock",
     "onCommand:c-workflow-tools.gitDifftoolCompare",
     "onCommand:c-workflow-tools.packageDiff",
-    "onCommand:c-workflow-tools.diagnoseSymbolSearch"
+    "onCommand:c-workflow-tools.diagnoseSymbolSearch",
+    "onCommand:c-workflow-tools.aiReviewCommit",
+    "onCommand:c-workflow-tools.aiReviewStatus",
+    "onCommand:c-workflow-tools.aiReviewCleanLegacy"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -63,8 +66,32 @@
         "command": "c-workflow-tools.diagnoseSymbolSearch",
         "title": "C Workflow: 诊断符号搜索（输出到输出面板）",
         "category": "C Workflow"
+      },
+      {
+        "command": "c-workflow-tools.aiReviewCommit",
+        "title": "C Workflow: AI 审查并提交（提交前审查暂存区）",
+        "category": "C Workflow"
+      },
+      {
+        "command": "c-workflow-tools.aiReviewStatus",
+        "title": "C Workflow: AI 审查状态（启动条件与配置）",
+        "category": "C Workflow"
+      },
+      {
+        "command": "c-workflow-tools.aiReviewCleanLegacy",
+        "title": "C Workflow: 清理旧的 AI 审查钩子环境",
+        "category": "C Workflow"
       }
     ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "c-workflow-tools.aiReviewCommit",
+          "when": "scmProvider == git",
+          "group": "navigation"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "c-workflow-tools.gitDifftoolCompare",
@@ -110,6 +137,94 @@
           "icon": "$(git-compare)"
         }
       ]
+    },
+    "configuration": {
+      "title": "C Workflow Tools",
+      "properties": {
+        "c-workflow-tools.aiReview.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "启用 AI 代码审查。**两个条件都满足才会启动**：工作区包含 git 仓库、本机安装并可用的 `codebuddy` CLI；否则本扩展不监听、不写文件、不弹窗。"
+        },
+        "c-workflow-tools.aiReview.cliPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "`codebuddy` CLI 路径。留空则自动在 PATH 中查找 `codebuddy` / `cbc`。"
+        },
+        "c-workflow-tools.aiReview.reviewCommit": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "提交后自动审查该次提交（事后审查，只能报告问题）。「AI 审查并提交」命令不受此开关影响。"
+        },
+        "c-workflow-tools.aiReview.reviewMerge": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "合并提交：只审查人工解冲突的文件（与两个父提交都不同的文件）。无冲突的合并不调用 AI。"
+        },
+        "c-workflow-tools.aiReview.reviewRebase": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "变基：只审查被人工改写的提交（依据 reflog 的重放记录 + 逐提交内容比对）。干净变基不调用 AI。"
+        },
+        "c-workflow-tools.aiReview.reviewSync": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "同步：合并/拉取带入本分支的提交（本分支上首次出现的代码）也会审查。"
+        },
+        "c-workflow-tools.aiReview.blockAt": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "default": "high",
+          "markdownDescription": "达到该级别的问题时，「AI 审查并提交」会先要求确认；事后审查只能报告，无法拦截。"
+        },
+        "c-workflow-tools.aiReview.notify": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "审查结束后弹出结果通知（问题数量、风险、结论摘要，并可打开报告）。"
+        },
+        "c-workflow-tools.aiReview.modalResult": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "结果通知用模态对话框（一定会看到，会打断操作）；关闭则用右下角通知。"
+        },
+        "c-workflow-tools.aiReview.timeoutSec": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "markdownDescription": "单次 AI 调用超时（秒）。超时后本次改动不会被审查，也不会阻塞你继续操作。"
+        },
+        "c-workflow-tools.aiReview.maxFiles": {
+          "type": "number",
+          "default": 10,
+          "markdownDescription": "单次审查最多送审的文件数（按改动行数从大到小占用预算）。"
+        },
+        "c-workflow-tools.aiReview.maxDiffKb": {
+          "type": "number",
+          "default": 80,
+          "markdownDescription": "单次审查 diff 体积上限（KB）。"
+        },
+        "c-workflow-tools.aiReview.maxFileLines": {
+          "type": "number",
+          "default": 400,
+          "markdownDescription": "单个文件 diff 超过该行数会被截断（截断处会标注）。"
+        },
+        "c-workflow-tools.aiReview.minLines": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "改动行数低于该值时跳过审查（0 = 不跳过），用于过滤微小改动。"
+        },
+        "c-workflow-tools.aiReview.maxCommits": {
+          "type": "number",
+          "default": 10,
+          "markdownDescription": "变基/同步一次最多审查的提交数（超出只审最近的若干个）。"
+        },
+        "c-workflow-tools.aiReview.language": {
+          "type": "string",
+          "enum": ["zh", "en"],
+          "default": "zh",
+          "markdownDescription": "审查报告与提示词语言。"
+        }
+      }
     }
   },
   "scripts": {
