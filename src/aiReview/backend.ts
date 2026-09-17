@@ -13,6 +13,35 @@ import type { ReviewConfig } from './types';
 /** CLI 可执行名候选 */
 const CLI_NAMES = ['codebuddy', 'cbc'];
 
+/**
+ * Windows 下 Node 能直接 spawn 的扩展名。
+ * 注意：npm 全局安装会在同一目录同时生成 `codebuddy`（bash shim，无扩展名）、
+ * `codebuddy.cmd`、`codebuddy.ps1`；无扩展名那个只能由 git-bash 执行，
+ * 直接 spawn 会 ENOENT —— 所以查找时必须优先带扩展名的 shim。
+ * PATHEXT 里的 .vbs/.js/.wsf/.msc 之类要靠解释器，spawn 不了，因此用白名单而非 PATHEXT 全集。
+ */
+const WIN_SPAWNABLE_EXTS = ['.exe', '.cmd', '.bat', '.com'];
+
+/** Windows 下该文件能否被直接 spawn（npm 生成的无扩展名 bash shim 不能） */
+function isSpawnableOnWindows(file: string): boolean {
+    const lower = file.toLowerCase();
+    return WIN_SPAWNABLE_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+/** 用户在设置里填了无扩展名的 shim 时，自动换成同目录可直接执行的兄弟文件 */
+function withSpawnableExt(full: string): string {
+    if (process.platform !== 'win32' || isSpawnableOnWindows(full)) {
+        return full;
+    }
+    for (const ext of WIN_SPAWNABLE_EXTS) {
+        const candidate = full + ext;
+        if (fs.existsSync(candidate)) {
+            return candidate;
+        }
+    }
+    return full;
+}
+
 /** 默认屏蔽的工具：提示词是自包含的，禁掉工具可避免交互式授权弹窗把审查卡死 */
 export const DEFAULT_DENY_TOOLS = 'Bash,Write,Edit,Read,Glob,Grep,WebFetch,WebSearch';
 
@@ -27,14 +56,14 @@ export interface BackendInfo {
 /** 在 PATH 中查找可执行文件（不依赖 shell，兼容 Windows 的 .cmd/.exe） */
 function lookupOnPath(name: string): string | undefined {
     if (path.isAbsolute(name) || name.includes('/') || name.includes('\\')) {
-        return fs.existsSync(name) ? name : undefined;
+        return fs.existsSync(name) ? withSpawnableExt(path.resolve(name)) : undefined;
     }
     const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+    // Windows 先找能直接执行的 .exe/.cmd/.bat/.com：npm 全局安装会同时生成无扩展名的
+    // bash shim（如 C:\Users\xxx\AppData\Roaming\npm\codebuddy），它只能由 git-bash 执行，
+    // 直接 spawn 会 ENOENT。无扩展名只作最后兜底，且下面 resolveBackend 会再校验一次。
     const names = process.platform === 'win32'
-        ? [name, ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
-            .split(';')
-            .filter(Boolean)
-            .map((ext) => name + ext.toLowerCase())]
+        ? [...WIN_SPAWNABLE_EXTS.map((ext) => name + ext), name]
         : [name];
     for (const dir of dirs) {
         for (const candidate of names) {
@@ -75,6 +104,15 @@ export function resolveBackend(cfg: ReviewConfig): BackendInfo {
             detail: cfg.cliPath
                 ? `设置里的 codebuddy 路径不存在：${cfg.cliPath}`
                 : '未找到 codebuddy CLI（请先 npm install -g @tencent-ai/codebuddy-code）',
+        };
+    }
+    if (process.platform === 'win32' && !isSpawnableOnWindows(cliPath)) {
+        // 典型情况：找到了 npm 的 bash shim，Windows 下启动必失败
+        return {
+            cliPath: '',
+            available: false,
+            detail: `${path.basename(cliPath)} 是 npm 生成的 shell 脚本，Windows 下无法直接启动；`
+                + `请设置 c-workflow-tools.aiReview.cliPath 为 ${cliPath}.cmd`,
         };
     }
     return { cliPath, available: true, detail: cliPath };
@@ -135,7 +173,9 @@ export function callCli(cliPath: string, prompt: string, cfg: ReviewConfig): Pro
         child.stderr.on('data', (d: Buffer) => {
             if (stderr.length < 16 * 1024) { stderr += d.toString('utf8'); }
         });
-        child.on('error', (e: Error) => settle(() => reject(new Error(`无法启动 codebuddy CLI：${e.message}`))));
+        child.on('error', (e: Error) => settle(() => reject(new Error(`无法启动 codebuddy CLI：${e.message}`
+            + (process.platform === 'win32' && !isSpawnableOnWindows(cliPath)
+                ? `（${path.basename(cliPath)} 是 shell 脚本，请改用 ${cliPath}.cmd）` : '')))));
         child.on('close', (code) => {
             settle(() => {
                 const out = stdout.trim();

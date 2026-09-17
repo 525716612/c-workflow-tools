@@ -2,6 +2,15 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.1.2] - 2026-09-17
+
+### Fixed
+
+- 修复：Windows 上 AI 审查调用失败，报「无法启动 codebuddy CLI：spawn ...\npm\codebuddy ENOENT」。npm 全局安装会在同一目录同时生成 `codebuddy`（无扩展名的 bash shim）与 `codebuddy.cmd`，原查找顺序先命中了无扩展名的 shim，Windows 下无法直接执行
+  - PATH 查找改为白名单扩展名优先（`.exe/.cmd/.bat/.com`），无扩展名只作兜底；不再使用 PATHEXT 全集（`.js/.vbs` 等需要解释器，spawn 不了）
+  - 设置 `c-workflow-tools.aiReview.cliPath` 填了无扩展名路径时，自动换成同目录的 `.cmd`
+  - 启动闸门与调用失败提示里明确说明「请改用 xxx.cmd」，不再只抛 ENOENT
+
 ## [0.1.1] - 2026-09-17
 
 ### Fixed
