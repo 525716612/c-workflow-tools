@@ -51,6 +51,8 @@ export interface CollectResult {
     notes: string[];
     added: number;
     deleted: number;
+    /** 本次实际送审的提交 sha（用于记录"审过"，下次不再重复审） */
+    commits?: string[];
 }
 
 /** 引擎配置（由 VS Code 设置或命令行参数提供） */
@@ -71,7 +73,7 @@ export interface ReviewConfig {
     blockAt: Severity;
     /** 全局自定义规则文件（<globalStorage>/review-rules.md） */
     globalRulesFile?: string;
-    /** 单次带入本分支的提交数量上限（同步/变基场景） */
+    /** 单次带入本分支的提交数量上限（同步/变基/合并场景） */
     maxCommits: number;
     /** 是否审查 AI 返回结果的原始文本（调试用，写入报告） */
     keepRaw: boolean;

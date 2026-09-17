@@ -9,7 +9,7 @@ import type { CollectResult, DiffEntry, ReviewConfig } from './types';
  * 范围：
  *   staged  暂存区（普通本地提交）
  *   commit  单个提交自身的改动（普通提交/修订单个提交）
- *   merge   合并提交里"人工解冲突"的文件（与两个父提交都不同）
+ *   merge   合并提交：人工解冲突的文件 + 本次带入本分支且尚未审过的提交
  *   rebase  变基过程中被人工改写的提交（逐提交比对增删行签名）
  *   sync    合并/拉取带入本分支的提交
  */
@@ -204,20 +204,38 @@ export async function collectCommit(repo: string, rev: string, cfg: ReviewConfig
     for (const entry of result.entries) {
         entry.commit = label;
     }
+    result.commits = [rev];
     return result;
 }
 
 /**
- * 合并提交：只挑"人工解冲突"的文件。
+ * 合并提交：人工解冲突的文件 + 本次带入本分支、本插件尚未审过的提交。
  *
- * 判据是「与两个父提交都不同」——干净合并时文件内容必然等于某一侧，
- * 只有人手动改过才会两边都不一样。无冲突的合并因此不会有任何条目（0 次 AI 调用）。
+ * 解冲突文件的判据是「与每个父提交都不同」——干净合并时文件内容必然等于某一侧，
+ * 只有人手动改过才会两边都不一样。
+ *
+ * 不能因"内容来自被合并分支"就认为它审过：审查只在本插件里发生，被合并的提交可能是
+ * 别人推的、或在其它机器上产生的，本插件从未见过。因此这里把「本分支原先没有的提交」
+ * 一并送审，并用 reviewed（本插件实际审过的提交记录）去重，避免重复审查。
  */
-export async function collectMerge(repo: string, rev: string, cfg: ReviewConfig): Promise<CollectResult> {
+export async function collectMerge(
+    repo: string,
+    rev: string,
+    cfg: ReviewConfig,
+    reviewed: Set<string> = new Set()
+): Promise<CollectResult> {
     const parents = await gitParents(repo, rev);
     if (parents.length < 2) {
-        return { entries: [], skipped: [], notes: [], added: 0, deleted: 0 };
+        return { entries: [], skipped: [], notes: [], added: 0, deleted: 0, commits: [] };
     }
+    const entries: DiffEntry[] = [];
+    const skipped: string[] = [];
+    const notes: string[] = [];
+    const commits: string[] = [];
+    let added = 0;
+    let deleted = 0;
+
+    // 1) 人工解冲突的文件（优先级最高：这些内容是本次新写的）
     const changedVs = async (parent: string): Promise<Set<string>> => {
         const raw = await runGitQuiet(['diff', '--no-renames', '--name-only', parent, rev], repo);
         return new Set(raw.split(/\r?\n/).filter((n) => n !== ''));
@@ -235,17 +253,53 @@ export async function collectMerge(repo: string, rev: string, cfg: ReviewConfig)
             resolved.push(name);
         }
     }
-    if (resolved.length === 0) {
-        return { entries: [], skipped: [], notes: [], added: 0, deleted: 0 };
+    if (resolved.length > 0) {
+        const sub = await collectDiff(repo, [parents[0], rev], resolved, cfg);
+        const label = await commitLabel(repo, rev);
+        for (const entry of sub.entries) {
+            entry.commit = `合并解冲突 ${label}`;
+        }
+        entries.push(...sub.entries);
+        skipped.push(...sub.skipped);
+        notes.push(...sub.notes);
+        added += sub.added;
+        deleted += sub.deleted;
+        notes.push(`合并人工解冲突的文件 ${resolved.length} 个`);
     }
 
-    const result = await collectDiff(repo, [parents[0], rev], resolved, cfg);
-    const label = await commitLabel(repo, rev);
-    for (const entry of result.entries) {
-        entry.commit = `合并解冲突 ${label}`;
+    // 2) 本次合并带入本分支的提交（被合并分支有、第一父分支原先没有的）
+    const incoming = new Set<string>();
+    for (const parent of parents.slice(1)) {
+        const raw = await runGitQuiet(['rev-list', parent, '--not', parents[0]], repo);
+        for (const sha of raw.split(/\r?\n/).filter(Boolean)) {
+            incoming.add(sha);
+        }
     }
-    result.notes.push(`合并提交只审查人工解冲突的 ${resolved.length} 个文件（其余内容来自被合并分支）`);
-    return result;
+    if (incoming.size > 0) {
+        const pending = [...incoming].filter((sha) => !reviewed.has(sha));
+        const already = incoming.size - pending.length;
+        if (pending.length === 0) {
+            notes.push(`本次合并带入 ${incoming.size} 个提交，均已审查过，不再重复审查`);
+        } else {
+            // 新的在前：预算用在最新带入的代码上
+            const taken = pending.slice(0, cfg.maxCommits);
+            for (const sha of taken) {
+                const sub = await collectCommit(repo, sha, cfg);
+                entries.push(...sub.entries);
+                skipped.push(...sub.skipped);
+                notes.push(...sub.notes);
+                added += sub.added;
+                deleted += sub.deleted;
+                commits.push(sha);
+            }
+            notes.push(`本次合并带入本分支 ${incoming.size} 个提交，审查其中未审过的 ${taken.length} 个`
+                + (already > 0 ? `（${already} 个此前已审过）` : '')
+                + (pending.length > taken.length
+                    ? `；受单次上限 ${cfg.maxCommits} 限制，仍有 ${pending.length - taken.length} 个未审` : ''));
+        }
+    }
+
+    return { entries, skipped, notes, added, deleted, commits };
 }
 
 /**
@@ -316,39 +370,46 @@ export async function collectRebase(
 
 /**
  * 同步（事后判定）：合并/拉取带入本分支的提交。
- * 传入的是「本分支原先没有的提交」，因此只需审它们的 patch。
+ * 传入的是「本分支原先没有的提交」，因此只需审它们的 patch；已审过的（reviewed）跳过。
  */
 export async function collectSync(
     repo: string,
     oldHead: string,
     newHead: string,
-    cfg: ReviewConfig
+    cfg: ReviewConfig,
+    reviewed: Set<string> = new Set()
 ): Promise<CollectResult> {
     const raw = await runGitQuiet(['rev-list', newHead, '--not', oldHead], repo);
-    const commits = raw.split(/\r?\n/).filter(Boolean);
-    if (commits.length === 0) {
-        return { entries: [], skipped: [], notes: [], added: 0, deleted: 0 };
+    const all = raw.split(/\r?\n/).filter(Boolean);
+    if (all.length === 0) {
+        return { entries: [], skipped: [], notes: [], added: 0, deleted: 0, commits: [] };
     }
 
     const entries: DiffEntry[] = [];
     const skipped: string[] = [];
     const notes: string[] = [];
+    const commits: string[] = [];
     let added = 0;
     let deleted = 0;
+    const pending = all.filter((sha) => !reviewed.has(sha));
     // 新的在前：预算用在最新带入的代码上
-    for (const rev of commits.slice(0, cfg.maxCommits)) {
+    for (const rev of pending.slice(0, cfg.maxCommits)) {
         const sub = await collectCommit(repo, rev, cfg);
         entries.push(...sub.entries);
         skipped.push(...sub.skipped);
         notes.push(...sub.notes);
         added += sub.added;
         deleted += sub.deleted;
+        commits.push(rev);
     }
-    if (commits.length > cfg.maxCommits) {
-        notes.push(`带入本分支的提交共 ${commits.length} 个，只审查最新的 ${cfg.maxCommits} 个`);
+    if (all.length > cfg.maxCommits) {
+        notes.push(`带入本分支的提交共 ${all.length} 个，只审查最新的 ${cfg.maxCommits} 个`);
     }
-    if (entries.length > 0) {
-        notes.push(`本次带入本分支的提交共 ${Math.min(commits.length, cfg.maxCommits)} 个`);
+    if (pending.length === 0) {
+        notes.push(`带入本分支的 ${all.length} 个提交均已审查过，不再重复审查`);
+    } else if (entries.length > 0) {
+        notes.push(`本次带入本分支的提交共 ${commits.length} 个`
+            + (all.length - pending.length > 0 ? `（${all.length - pending.length} 个此前已审过）` : ''));
     }
-    return { entries, skipped, notes, added, deleted };
+    return { entries, skipped, notes, added, deleted, commits };
 }

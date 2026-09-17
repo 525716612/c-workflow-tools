@@ -11,7 +11,10 @@
  *   node dist/cli.js --repo . --scope rebase --old <sha> --new <sha>
  *   node dist/cli.js --repo . --scope staged --cli C:/path/to/codebuddy.cmd --json
  */
+import * as path from 'path';
 import { runReview, preparePrompt, classifyHeadChange, lastAction } from './engine';
+import { gitCommonDir } from './gitRun';
+import { readReviewedCommits } from './report';
 import { defaultConfig } from './types';
 import type { ReviewConfig, ReviewScope } from './types';
 
@@ -93,9 +96,11 @@ async function main(): Promise<number> {
     }
 
     if (args.dryRun) {
+        // 与真实运行一致：合并/同步场景要按"已审记录"去重
+        const stateDir = path.join(await gitCommonDir(args.repo), 'ai-review');
         const prepared = await preparePrompt({
             repo: args.repo, scope, rev, oldHead: args.oldHead, newHead: args.newHead, cfg: args.cfg,
-        });
+        }, readReviewedCommits(stateDir));
         if (!prepared.prompt) {
             console.log(`[ai-review] 无需审查：${prepared.reason}`);
             return 0;

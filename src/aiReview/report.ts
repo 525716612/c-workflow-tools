@@ -209,6 +209,51 @@ export function artifactPaths(stateDir: string): ArtifactPaths {
     };
 }
 
+// ---------------------------------------------------------------------------
+// 已审查提交记录（避免合并/同步时把审过的提交再审一遍）
+// ---------------------------------------------------------------------------
+
+/** 已审提交记录最多保留的条数（超出丢最旧的，避免文件无限增长） */
+const MAX_REVIEWED_COMMITS = 2000;
+
+/** 已审提交记录文件路径 */
+export function reviewedCommitsFile(stateDir: string): string {
+    return path.join(stateDir, 'reviewed-commits.log');
+}
+
+/** 读取本插件已审查过的提交 sha */
+export function readReviewedCommits(stateDir: string): Set<string> {
+    try {
+        const raw = fs.readFileSync(reviewedCommitsFile(stateDir), 'utf8');
+        return new Set(raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+    } catch {
+        return new Set();
+    }
+}
+
+/**
+ * 记录本次已审查的提交（追加 + 去重 + 保留最近若干条）。
+ * 写失败不影响审查结论，只是下次可能重复审一次。
+ */
+export function markReviewedCommits(stateDir: string, shas: string[]): void {
+    const valid = shas.filter((sha) => Boolean(sha));
+    if (valid.length === 0) {
+        return;
+    }
+    try {
+        fs.mkdirSync(stateDir, { recursive: true });
+        const known = readReviewedCommits(stateDir);
+        for (const sha of valid) {
+            known.add(sha);
+        }
+        const all = [...known];
+        const kept = all.length > MAX_REVIEWED_COMMITS ? all.slice(all.length - MAX_REVIEWED_COMMITS) : all;
+        fs.writeFileSync(reviewedCommitsFile(stateDir), kept.join('\n') + '\n', 'utf8');
+    } catch {
+        // 记录不了就下次重新审，不影响本次结论
+    }
+}
+
 /** 写 last-status.json / last-report.md / history.log（任何一步失败都不影响审查结论） */
 export function writeArtifacts(stateDir: string, record: ReviewStatusRecord, report: string): string {
     const files = artifactPaths(stateDir);

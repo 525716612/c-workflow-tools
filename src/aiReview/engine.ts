@@ -5,6 +5,7 @@ import { buildPrompt } from './prompt';
 import { resolveBackend, callCli } from './backend';
 import {
     extractJson, normalize, countBySeverity, renderText, renderMarkdown, writeArtifacts, buildRecord,
+    readReviewedCommits, markReviewedCommits,
 } from './report';
 import type { ReportMeta } from './report';
 import { gitCommonDir, gitHead, gitParents, gitLastAction, isAncestor, commitLabel } from './gitRun';
@@ -30,8 +31,12 @@ export interface ReviewRequest {
     cfg: ReviewConfig;
 }
 
-/** 按范围收集待审查内容 */
-async function collectFor(req: ReviewRequest): Promise<CollectResult> {
+/**
+ * 按范围收集待审查内容
+ *
+ * @param reviewed 本插件已审过的提交（合并/同步场景据此去重，避免把审过的提交再审一遍）
+ */
+async function collectFor(req: ReviewRequest, reviewed: Set<string> = new Set()): Promise<CollectResult> {
     const { repo, cfg, scope } = req;
     if (scope === 'staged') {
         return collectStaged(repo, cfg);
@@ -40,12 +45,12 @@ async function collectFor(req: ReviewRequest): Promise<CollectResult> {
         return req.rev ? collectCommit(repo, req.rev, cfg) : emptyCollect();
     }
     if (scope === 'merge') {
-        return req.rev ? collectMerge(repo, req.rev, cfg) : emptyCollect();
+        return req.rev ? collectMerge(repo, req.rev, cfg, reviewed) : emptyCollect();
     }
     if (scope === 'rebase') {
         return req.oldHead && req.newHead ? collectRebase(repo, req.oldHead, req.newHead, cfg) : emptyCollect();
     }
-    return req.oldHead && req.newHead ? collectSync(repo, req.oldHead, req.newHead, cfg) : emptyCollect();
+    return req.oldHead && req.newHead ? collectSync(repo, req.oldHead, req.newHead, cfg, reviewed) : emptyCollect();
 }
 
 function emptyCollect(): CollectResult {
@@ -56,7 +61,7 @@ function emptyCollect(): CollectResult {
 function emptyReason(scope: ReviewScope): string {
     switch (scope) {
         case 'merge':
-            return '合并无冲突（内容来自被合并分支，已在原分支审查过）';
+            return '本次合并没有人工解冲突改动，且带入本分支的提交都已审过或没有可审的源码改动';
         case 'rebase':
             return '变基重放的提交内容未被改写（解冲突未改动代码）';
         case 'sync':
@@ -71,9 +76,10 @@ function emptyReason(scope: ReviewScope): string {
  * 返回的 reason 非空表示没什么可审的。
  */
 export async function preparePrompt(
-    req: ReviewRequest
+    req: ReviewRequest,
+    reviewed: Set<string> = new Set()
 ): Promise<{ prompt: string; collected: CollectResult; reason: string }> {
-    const collected = await collectFor(req);
+    const collected = await collectFor(req, reviewed);
     if (collected.entries.length === 0) {
         return { prompt: '', collected, reason: emptyReason(req.scope) };
     }
@@ -100,7 +106,8 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
         ensureRulesFile(cfg.globalRulesFile);
     }
 
-    const collected = await collectFor(req);
+    const reviewed = readReviewedCommits(stateDir);
+    const collected = await collectFor(req, reviewed);
     const meta: ReportMeta = {
         repo: repoName,
         scope,
@@ -179,6 +186,10 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
         detail: parsed ? '' : '模型未返回可解析的 JSON（原始输出见报告）',
     });
     const reportPath = writeArtifacts(stateDir, record, report);
+    // 真正审完（不论有没有问题）才记入"已审"，超时/失败的下次还会再审
+    if (collected.commits && collected.commits.length > 0) {
+        markReviewedCommits(stateDir, collected.commits);
+    }
 
     const blockingCount = result.findings
         .filter((f) => SEVERITY_ORDER[f.severity] >= SEVERITY_ORDER[cfg.blockAt]).length;

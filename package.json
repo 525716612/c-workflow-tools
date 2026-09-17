@@ -3,7 +3,7 @@
   "displayName": "C Workflow Tools",
   "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、全局符号搜索、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
   "publisher": "cxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -216,7 +216,7 @@
         "c-workflow-tools.aiReview.maxCommits": {
           "type": "number",
           "default": 10,
-          "markdownDescription": "变基/同步一次最多审查的提交数（超出只审最近的若干个）。"
+          "markdownDescription": "变基/同步/合并一次最多审查的提交数（超出只审最近的若干个）。"
         },
         "c-workflow-tools.aiReview.language": {
           "type": "string",
