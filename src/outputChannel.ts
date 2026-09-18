@@ -26,18 +26,25 @@ export function getChannel(): vscode.OutputChannel {
     return channel;
 }
 
+/** 时间前缀：同一句话反复出现时（如重复失败）能看清新旧，避免误以为日志没更新 */
+function stamp(): string {
+    const now = new Date();
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
 /**
  * 向输出通道写入一行普通日志。
  */
 export function log(message: string): void {
-    getChannel().appendLine(message);
+    getChannel().appendLine(`[${stamp()}] ${message}`);
 }
 
 /**
  * 向输出通道写入一行错误日志（带 [错误] 前缀并醒目显示）。
  */
 export function logError(message: string): void {
-    getChannel().appendLine(`[错误] ${message}`);
+    getChannel().appendLine(`[${stamp()}] [错误] ${message}`);
 }
 
 /**

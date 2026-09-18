@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SEVERITY_ORDER, STATUS_TEXT } from './types';
-import type { Finding, ReviewResult, ReviewStatusRecord, Severity } from './types';
+import type { DiffEntry, Finding, ReviewResult, ReviewStatusRecord, Severity } from './types';
 
 /**
  * 结果处理：解析模型输出 → 规范化 → 渲染报告 → 落盘状态/历史。
@@ -87,6 +87,8 @@ export function countBySeverity(findings: Finding[]): Record<string, number> {
 export interface ReportMeta {
     repo: string;
     scope: string;
+    /** 本次审查对应的 HEAD（短 sha），写进报告以区分"这是哪一次的审查" */
+    head: string;
     files: number;
     added: number;
     deleted: number;
@@ -139,6 +141,7 @@ export function renderMarkdown(result: ReviewResult, meta: ReportMeta, rawText =
     lines.push('');
     lines.push(`- 仓库：\`${meta.repo}\``);
     lines.push(`- 范围：${meta.scope}`);
+    lines.push(`- 提交：\`${meta.head || '未知'}\``);
     lines.push(`- 文件：${meta.files} 个，+${meta.added} -${meta.deleted} 行`);
     lines.push(`- 后端：${meta.backend}，耗时 ${meta.elapsed.toFixed(1)}s`);
     lines.push(`- 时间：${new Date().toLocaleString()}`);
@@ -188,6 +191,61 @@ export function renderMarkdown(result: ReviewResult, meta: ReportMeta, rawText =
         lines.push('```');
         lines.push(rawText.trim());
         lines.push('```');
+    }
+    return lines.join('\n');
+}
+
+/**
+ * 「未审查」报告：跳过 / 超时 / 失败 / 后端不可用时也要写一份。
+ *
+ * 原因：last-report.md 是覆盖写的，不写的话它会一直停在上一份（成功的）旧报告上，
+ * 用户点「打开报告」看到的就是很久以前的内容，也无法知道这次到底审了哪些文件。
+ */
+export function renderUnreviewedReport(
+    meta: ReportMeta,
+    reason: string,
+    entries: DiffEntry[] = [],
+    skipped: string[] = []
+): string {
+    const lines: string[] = [];
+    lines.push('# AI 代码审查报告（未审查）');
+    lines.push('');
+    lines.push(`- 仓库：\`${meta.repo}\``);
+    lines.push(`- 范围：${meta.scope}`);
+    lines.push(`- 提交：\`${meta.head || '未知'}\``);
+    lines.push(`- 文件：${meta.files} 个，+${meta.added} -${meta.deleted} 行`);
+    lines.push(`- 后端：${meta.backend}，耗时 ${meta.elapsed.toFixed(1)}s`);
+    lines.push(`- 时间：${new Date().toLocaleString()}`);
+    lines.push('');
+    lines.push(`> 本次改动**没有被审查**（${reason}）。下面的内容只是收集到的改动范围，不代表审查结论。`);
+    lines.push('');
+    if (entries.length > 0) {
+        lines.push('## 本次待审查的文件');
+        lines.push('');
+        for (const entry of entries) {
+            const from = entry.commit ? `（提交 ${entry.commit.slice(0, 8)}）` : '';
+            lines.push(`- \`${entry.path}\` +${entry.added} -${entry.deleted}${from}`);
+        }
+        lines.push('');
+    }
+    if (meta.notes.length > 0) {
+        lines.push('## 收集说明');
+        lines.push('');
+        for (const note of meta.notes) {
+            lines.push(`- ${note}`);
+        }
+        lines.push('');
+    }
+    if (skipped.length > 0) {
+        lines.push(`## 跳过的文件（${skipped.length} 个，非源码/二进制）`);
+        lines.push('');
+        for (const name of skipped.slice(0, 50)) {
+            lines.push(`- \`${name}\``);
+        }
+        if (skipped.length > 50) {
+            lines.push(`- …… 其余 ${skipped.length - 50} 个略`);
+        }
+        lines.push('');
     }
     return lines.join('\n');
 }

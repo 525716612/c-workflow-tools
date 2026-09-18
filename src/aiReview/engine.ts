@@ -4,8 +4,8 @@ import { loadRules, ensureRulesFile } from './rules';
 import { buildPrompt } from './prompt';
 import { resolveBackend, callCli } from './backend';
 import {
-    extractJson, normalize, countBySeverity, renderText, renderMarkdown, writeArtifacts, buildRecord,
-    readReviewedCommits, markReviewedCommits,
+    extractJson, normalize, countBySeverity, renderText, renderMarkdown, renderUnreviewedReport,
+    writeArtifacts, buildRecord, readReviewedCommits, markReviewedCommits,
 } from './report';
 import type { ReportMeta } from './report';
 import { gitCommonDir, gitHead, gitParents, gitLastAction, isAncestor, commitLabel } from './gitRun';
@@ -111,6 +111,7 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
     const meta: ReportMeta = {
         repo: repoName,
         scope,
+        head: head.slice(0, 8),
         files: collected.entries.length,
         added: collected.added,
         deleted: collected.deleted,
@@ -121,11 +122,13 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
 
     // 没有可审内容：不调 AI（干净合并/干净变基都走这里）
     if (collected.entries.length === 0) {
+        meta.elapsed = (Date.now() - started) / 1000;
         return finishEmpty(repo, scope, head, stateDir, meta, emptyReason(scope), collected);
     }
 
     const changedLines = collected.added + collected.deleted;
     if (cfg.minLines > 0 && changedLines < cfg.minLines) {
+        meta.elapsed = (Date.now() - started) / 1000;
         return finishEmpty(repo, scope, head, stateDir, meta,
             `改动过小（${changedLines} 行 < 阈值 ${cfg.minLines} 行），跳过审查`, collected);
     }
@@ -136,10 +139,12 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
         meta.backend = 'none';
         meta.elapsed = (Date.now() - started) / 1000;
         const record = buildRecord({ repo: repoName, scope, head, status: 'error', detail, meta });
-        writeArtifacts(stateDir, record, '');
+        // 也写报告：否则 last-report.md 会停在上一次的内容上，看起来像"报告一直是老的"
+        const report = renderUnreviewedReport(meta, detail, collected.entries, collected.skipped);
+        const reportPath = writeArtifacts(stateDir, record, report);
         return {
-            status: 'error', record, report: '', text: `[ai-review] ${detail}`,
-            reportPath: '', blockingCount: 0, message: detail,
+            status: 'error', record, report, text: `[ai-review] ${detail}`,
+            reportPath, blockingCount: 0, message: detail,
         };
     }
     meta.backend = `codebuddy(${path.basename(backend.cliPath)})`;
@@ -165,9 +170,11 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
         const record = buildRecord({
             repo: repoName, scope, head, status, detail, meta,
         });
-        writeArtifacts(stateDir, record, '');
+        // 超时/失败同样出报告：记录本次没审到的文件，避免打开报告看到的还是上一次的旧内容
+        const report = renderUnreviewedReport(meta, detail, collected.entries, collected.skipped);
+        const reportPath = writeArtifacts(stateDir, record, report);
         const text = `[ai-review] 未完成审查（${detail}）`;
-        return { status, record, report: '', text, reportPath: '', blockingCount: 0, message: text };
+        return { status, record, report, text, reportPath, blockingCount: 0, message: text };
     }
 
     meta.elapsed = (Date.now() - started) / 1000;
@@ -214,12 +221,7 @@ function finishEmpty(
     const record = buildRecord({
         repo: path.basename(repo), scope, head, status: 'skipped', detail: reason, meta,
     });
-    const report = [
-        '# AI 代码审查', '',
-        `- 范围：${scope}`,
-        `- 结果：未审查（${reason}）`,
-        collected.skipped.length > 0 ? `- 跳过文件：${collected.skipped.length} 个非源码/二进制文件` : '',
-    ].filter(Boolean).join('\n');
+    const report = renderUnreviewedReport(meta, reason, collected.entries, collected.skipped);
     const reportPath = writeArtifacts(stateDir, record, report);
     const text = `[ai-review] ${reason}`;
     return { status: 'skipped', record, report, text, reportPath, blockingCount: 0, message: reason };
