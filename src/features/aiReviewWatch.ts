@@ -177,8 +177,8 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
     );
 }
 
-/** 审查范围的中文说明（结果弹窗展示用） */
-const SCOPE_TEXT: Record<string, string> = {
+/** 审查范围的中文说明（结果弹窗展示用）；覆盖全部 ReviewScope，索引必命中 */
+const SCOPE_TEXT: Record<ReviewScope, string> = {
     staged: '本地提交（提交前）',
     commit: '本地提交',
     merge: '合并',
@@ -200,10 +200,12 @@ export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<v
         log(`AI 审查结果（未弹窗提示）：${outcome.message}`);
         return;
     }
-    const modal = record.status === 'reviewed'
-        && vscode.workspace.getConfiguration('c-workflow-tools').get<boolean>('aiReview.modalResult', true);
     const counts = record.counts ?? {};
     const total = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
+    // reviewed 本身意味着"发现问题"（engine 侧 findings 为空时状态是 clean），
+    // total>0 是显式兜底：确保模态框只出现在真正有问题时，与注释/配置描述语义一致
+    const modal = record.status === 'reviewed' && total > 0
+        && vscode.workspace.getConfiguration('c-workflow-tools').get<boolean>('aiReview.modalResult', true);
     const countText = Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ');
 
     let message: string;

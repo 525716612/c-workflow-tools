@@ -2,6 +2,14 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.1.6] - 2026-09-20
+
+### Fixed
+
+- 修复：「删除/重构不要误报」引导在提示词（PROMPT_ZH/EN）与内置审查规则（DEFAULT_REVIEW_RULES）中重复拼接进最终提示词 —— 同一约束出现两份措辞，浪费 token 且增加模型遵循的不确定性。现统一保留 rules 段的权威定义，prompt 段不再重复
+- 模态框判定补充显式兜底 `total > 0`：此前仅按 `status === 'reviewed'` 判定（引擎侧 `reviewed` 必有 findings、无问题时状态为 `clean`，逻辑上正确），现与注释/配置描述的「模态框仅用于发现问题」语义直接对应，防未来状态语义变化
+- 修复：0.1.4→0.1.5 升版时对 package-lock.json 做全量文本替换，误把 `deep-is`、`imurmurhash`（真实版本 0.1.4）的 version 字段改掉，与条目内 resolved/integrity 指向的 0.1.4 包不一致。已改回 0.1.4，并核查全文件再无 version/resolved 不匹配的条目
+
 ## [0.1.5] - 2026-09-20
 
 ### Added
