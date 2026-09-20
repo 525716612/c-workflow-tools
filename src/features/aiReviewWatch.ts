@@ -208,16 +208,21 @@ export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<v
         && vscode.workspace.getConfiguration('c-workflow-tools').get<boolean>('aiReview.modalResult', true);
     const countText = Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ');
 
+    // 弹窗标题自证身份：审查完成顺序与提交顺序可能不一致（耗时不同/多仓库并行），
+    // 没有仓库+范围+提交标签就分不清结果对应哪次改动
+    const scopeText = SCOPE_TEXT[record.scope] ?? record.scope;
+    const ctx = [record.repo, scopeText, record.label || record.head].filter(Boolean).join(' · ');
+
     let message: string;
     let severity: 'info' | 'warning' | 'error' = 'info';
     if (record.status === 'reviewed') {
         severity = counts.high ? 'error' : 'warning';
-        message = `AI 审查：发现 ${total} 个问题（${countText || '见报告'}）`;
+        message = `AI 审查【${ctx}】：发现 ${total} 个问题（${countText || '见报告'}）`;
     } else if (record.status === 'clean') {
-        message = 'AI 审查：未发现问题';
+        message = `AI 审查【${ctx}】：未发现问题`;
     } else {
         severity = 'warning';
-        message = `AI 审查未完成（${record.status === 'timeout' ? '调用超时' : '调用失败'}）：本次改动未被审查`;
+        message = `AI 审查未完成【${ctx}】（${record.status === 'timeout' ? '调用超时' : '调用失败'}）：本次改动未被审查`;
     }
 
     const detail = [

@@ -360,6 +360,7 @@ export function buildRecord(params: {
     risk?: string;
     summary?: string;
     degraded?: string;
+    label?: string;
 }): ReviewStatusRecord {
     const { meta } = params;
     return {
@@ -370,6 +371,7 @@ export function buildRecord(params: {
         head: params.head,
         repo: params.repo,
         scope: params.scope,
+        label: params.label ?? '',
         files: meta.files,
         added: meta.added,
         deleted: meta.deleted,

@@ -101,6 +101,9 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
     const stateDir = path.join(await gitCommonDir(repo), 'ai-review');
     const head = await gitHead(repo);
     const repoName = path.basename(repo);
+    // 提交标签（短 sha + 主题）：commit/merge 场景填充，弹窗/报告据此自证身份
+    //（多次提交的审查结果完成顺序与提交顺序可能不一致，没有标签就分不清弹窗对应哪次）
+    const label = req.rev ? await commitLabel(repo, req.rev) : '';
 
     if (cfg.globalRulesFile) {
         ensureRulesFile(cfg.globalRulesFile);
@@ -138,7 +141,7 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
         const detail = backend.detail;
         meta.backend = 'none';
         meta.elapsed = (Date.now() - started) / 1000;
-        const record = buildRecord({ repo: repoName, scope, head, status: 'error', detail, meta });
+        const record = buildRecord({ repo: repoName, scope, head, status: 'error', detail, meta, label });
         // 也写报告：否则 last-report.md 会停在上一次的内容上，看起来像"报告一直是老的"
         const report = renderUnreviewedReport(meta, detail, collected.entries, collected.skipped);
         const reportPath = writeArtifacts(stateDir, record, report);
@@ -168,7 +171,7 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
         const detail = message.replace('__TIMEOUT__ ', '');
         meta.elapsed = (Date.now() - started) / 1000;
         const record = buildRecord({
-            repo: repoName, scope, head, status, detail, meta,
+            repo: repoName, scope, head, status, detail, meta, label,
         });
         // 超时/失败同样出报告：记录本次没审到的文件，避免打开报告看到的还是上一次的旧内容
         const report = renderUnreviewedReport(meta, detail, collected.entries, collected.skipped);
@@ -186,7 +189,7 @@ export async function runReview(req: ReviewRequest): Promise<ReviewOutcome> {
     const report = renderMarkdown(result, meta, parsed ? '' : stdout);
     const text = renderText(result, meta, parsed ? '' : stdout);
     const record = buildRecord({
-        repo: repoName, scope, head, status, meta,
+        repo: repoName, scope, head, status, meta, label,
         counts,
         risk: result.risk,
         summary: result.summary,

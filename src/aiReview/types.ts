@@ -108,6 +108,8 @@ export interface ReviewStatusRecord {
     head: string;
     repo: string;
     scope: ReviewScope;
+    /** 提交标签（短 sha + 主题，如 "8a1b2c3 fix: xxx"）：commit/merge 场景填充，弹窗/报告自证身份用 */
+    label?: string;
     files: number;
     added: number;
     deleted: number;
