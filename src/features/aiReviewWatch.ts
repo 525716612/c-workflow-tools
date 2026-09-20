@@ -178,7 +178,8 @@ const SCOPE_TEXT: Record<string, string> = {
 
 /**
  * 弹出审查结果通知（附「打开报告」）。
- * 通过 modalResult 决定用模态框（一定看到）还是右下角通知。
+ * 只有"发现问题"（reviewed）才按 modalResult 决定模态/非模态；
+ * 超时/失败（timeout/error）一律右下角通知 —— 审查没做成不值得打断当前操作。
  */
 export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<void> {
     const record = outcome.record;
@@ -189,8 +190,8 @@ export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<v
         log(`AI 审查结果（未弹窗提示）：${outcome.message}`);
         return;
     }
-    const modal = vscode.workspace.getConfiguration('c-workflow-tools')
-        .get<boolean>('aiReview.modalResult', true);
+    const modal = record.status === 'reviewed'
+        && vscode.workspace.getConfiguration('c-workflow-tools').get<boolean>('aiReview.modalResult', true);
     const counts = record.counts ?? {};
     const total = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
     const countText = Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ');

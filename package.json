@@ -3,7 +3,7 @@
   "displayName": "C Workflow Tools",
   "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、全局符号搜索、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
   "publisher": "cxy",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -185,22 +185,22 @@
         "c-workflow-tools.aiReview.modalResult": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "结果通知用模态对话框（一定会看到，会打断操作）；关闭则用右下角通知。"
+          "markdownDescription": "「发现问题」的审查结果用模态对话框（一定会看到，会打断操作）；关闭则用右下角通知。超时/调用失败一律右下角通知，不受此项影响。"
         },
         "c-workflow-tools.aiReview.timeoutSec": {
           "type": "number",
-          "default": 300,
+          "default": 600,
           "minimum": 10,
           "markdownDescription": "单次 AI 调用超时（秒）。超时后本次改动不会被审查，也不会阻塞你继续操作。"
         },
         "c-workflow-tools.aiReview.maxFiles": {
           "type": "number",
-          "default": 10,
+          "default": 8,
           "markdownDescription": "单次审查最多送审的文件数（按改动行数从大到小占用预算）。"
         },
         "c-workflow-tools.aiReview.maxDiffKb": {
           "type": "number",
-          "default": 80,
+          "default": 60,
           "markdownDescription": "单次审查 diff 体积上限（KB）。"
         },
         "c-workflow-tools.aiReview.maxFileLines": {

@@ -84,9 +84,9 @@ export function defaultConfig(): ReviewConfig {
     return {
         cliPath: '',
         cliArgs: ['--disallowedTools', 'Bash,Write,Edit,Read,Glob,Grep,WebFetch,WebSearch'],
-        timeoutSec: 300,
-        maxFiles: 10,
-        maxDiffKb: 80,
+        timeoutSec: 600,
+        maxFiles: 8,
+        maxDiffKb: 60,
         maxFileLines: 400,
         minLines: 0,
         language: 'zh',
