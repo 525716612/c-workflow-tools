@@ -2,6 +2,12 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.1.5] - 2026-09-20
+
+### Added
+
+- 事后审查（提交/合并/变基/同步触发）执行期间右下角显示进度通知「AI 正在审查 … 的 xx 改动…」：CLI 调用可能长达数分钟，此前期间界面毫无提示、结果"突然"弹出；审查结束后进度通知消失并按原有逻辑弹结果（与「AI 审查并提交」的进度提示样式一致）
+
 ## [0.1.4] - 2026-09-20
 
 ### Fixed

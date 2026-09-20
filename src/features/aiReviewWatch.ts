@@ -87,14 +87,23 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
             }
             log(`AI 审查：${path.basename(repo)} ${change.detail} → 开始审查（scope=${change.scope}）`);
             const gate = evaluateGate(context);
-            const outcome = await runReview({
-                repo,
-                scope: change.scope,
-                rev: change.rev,
-                oldHead: from,
-                newHead: to,
-                cfg: gate.cfg,
-            });
+            // 审查全程给个进度提示：CLI 一跑可能几分钟，没有提示的话结果就像"突然"弹出来的
+            const outcome = await vscode.window.withProgress(
+                {
+                    location: vscode.ProgressLocation.Notification,
+                    title: `C Workflow：AI 正在审查 ${path.basename(repo)} 的`
+                        + `${SCOPE_TEXT[change.scope] ?? change.scope}改动…`,
+                    cancellable: false,
+                },
+                () => runReview({
+                    repo,
+                    scope: change.scope,
+                    rev: change.rev,
+                    oldHead: from,
+                    newHead: to,
+                    cfg: gate.cfg,
+                })
+            );
             log(`AI 审查：${path.basename(repo)} ${outcome.record.status_text}（${outcome.message}）`);
             await showOutcomeNotification(outcome);
         } catch (e) {
