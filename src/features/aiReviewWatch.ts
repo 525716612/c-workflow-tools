@@ -87,17 +87,18 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
             }
             log(`AI 审查：${path.basename(repo)} ${change.detail} → 开始审查（scope=${change.scope}）`);
             const gate = evaluateGate(context);
+            const scope = change.scope; // 提前收窄类型：闭包里属性收窄会失效
             // 审查全程给个进度提示：CLI 一跑可能几分钟，没有提示的话结果就像"突然"弹出来的
             const outcome = await vscode.window.withProgress(
                 {
                     location: vscode.ProgressLocation.Notification,
                     title: `C Workflow：AI 正在审查 ${path.basename(repo)} 的`
-                        + `${SCOPE_TEXT[change.scope] ?? change.scope}改动…`,
+                        + `${SCOPE_TEXT[scope] ?? scope}改动…`,
                     cancellable: false,
                 },
                 () => runReview({
                     repo,
-                    scope: change.scope,
+                    scope,
                     rev: change.rev,
                     oldHead: from,
                     newHead: to,
