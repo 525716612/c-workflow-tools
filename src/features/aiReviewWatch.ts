@@ -56,12 +56,33 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
     /** 审查期间又发生了提交：等这次审完再处理最新的一次 */
     const pending = new Map<string, { from: string; to: string }>();
 
+    // 审查期间的状态栏常驻指示：右下角进度通知忙起来容易忽略，状态栏始终可见，
+    // 显示「AI 审查中 · 仓库名 · 已耗时」，避免用户忘记有审查在跑、结果弹窗显得"突然"
+    const reviewStarts = new Map<string, number>();
+    const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBar.name = 'C Workflow AI 审查';
+    const statusTimer = setInterval(() => {
+        if (reviewStarts.size === 0) {
+            statusBar.hide();
+            return;
+        }
+        const parts = [...reviewStarts.entries()]
+            .map(([r, t]) => `${path.basename(r)} ${Math.floor((Date.now() - t) / 1000)}s`);
+        statusBar.text = `$(sync~spin) AI 审查中 · ${parts.join(' · ')}`;
+        statusBar.tooltip = 'AI 代码审查正在后台运行，结束后会弹出结果';
+        statusBar.show();
+    }, 1000);
+    context.subscriptions.push(statusBar);
+
     const stop = (): void => {
         generation++;
         if (timer) {
             clearInterval(timer);
             timer = undefined;
         }
+        clearInterval(statusTimer);
+        reviewStarts.clear();
+        statusBar.hide();
         repos.clear();
         heads.clear();
         busy.clear();
@@ -88,6 +109,7 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
             log(`AI 审查：${path.basename(repo)} ${change.detail} → 开始审查（scope=${change.scope}）`);
             const gate = evaluateGate(context);
             const scope = change.scope; // 提前收窄类型：闭包里属性收窄会失效
+            reviewStarts.set(repo, Date.now()); // 状态栏指示开始计时（无审查时隐藏）
             // 审查全程给个进度提示：CLI 一跑可能几分钟，没有提示的话结果就像"突然"弹出来的
             const outcome = await vscode.window.withProgress(
                 {
@@ -111,6 +133,10 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
             logError(`事后审查失败（${path.basename(repo)}）：${(e as Error).message}`);
         } finally {
             busy.delete(repo);
+            reviewStarts.delete(repo);
+            if (reviewStarts.size === 0) {
+                statusBar.hide();
+            }
             const next = pending.get(repo);
             pending.delete(repo);
             if (next && next.to !== to) {
