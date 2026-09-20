@@ -6,6 +6,8 @@ import type { RuleSet } from './rules';
  * 以便审查质量不因移植而下降。
  */
 
+// 「删除/替换旧实现不要直接判为功能回归」的引导统一放在审查规则段（rules.ts 的
+// DEFAULT_REVIEW_RULES，会经 buildPrompt 拼进提示词），此模板不重复，避免同一约束两份措辞。
 const PROMPT_ZH = `你是一名资深代码审查工程师，正在对一次 git 改动做审查。
 
 【审查要求】
@@ -19,12 +21,12 @@ const PROMPT_ZH = `你是一名资深代码审查工程师，正在对一次 git
 5. 如果因为 diff 被截断而缺少上下文，无法确认时请在 detail 中说明"需确认"，不要凭空推断。
 6. 针对本项目的实际技术栈和约定审查，忽略与项目技术栈无关的通用建议。
 7. 输出必须是单个 JSON 对象，不要输出 JSON 以外的任何内容（不要 markdown 代码块）。
-（注：「删除/替换旧实现不要直接判为功能回归」的引导统一放在审查规则段（rules）里，此处不重复，避免同一约束出现两份措辞。）
 
 【输出 JSON 结构】
 {"summary":"一句话总体评价","risk":"high|medium|low","findings":[{"severity":"high|medium|low","file":"路径","line":"行号或范围","title":"问题标题","detail":"问题说明与影响","suggestion":"具体修改建议"}]}
 `;
 
+// 同 PROMPT_ZH：「删除/重构不误报」的引导只保留在 rules 段，模板正文不放维护者说明
 const PROMPT_EN = `You are a senior code reviewer. Review the git changes below.
 
 Rules:
@@ -39,8 +41,6 @@ Rules:
 5. If the diff was truncated and context is missing, say "needs verification" instead of guessing.
 6. Review against this project's actual stack and conventions, skip generic advice.
 7. Output a single JSON object and nothing else (no markdown fence).
-(Note: the "do not report replaced/removed implementations as functional regression" guidance lives
-in the review rules section only, so it is not stated twice with different wording.)
 
 JSON schema:
 {"summary":"one line verdict","risk":"high|medium|low","findings":[{"severity":"high|medium|low","file":"path","line":"line or range","title":"title","detail":"why it matters","suggestion":"concrete fix"}]}

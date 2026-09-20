@@ -2,6 +2,12 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.1.7] - 2026-09-20
+
+### Fixed
+
+- 修复：PROMPT_ZH/PROMPT_EN 中维护者向的「注/Note」说明（「删除/重构不误报引导已统一放 rules 段」）写在模板字面量正文里，会随提示词一起发给模型。移为 const 上方的代码注释，提示词正文只保留面向模型的规则
+
 ## [0.1.6] - 2026-09-20
 
 ### Fixed
