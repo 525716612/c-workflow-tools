@@ -1,5 +1,5 @@
 import {
-    runGit, runGitQuiet, gitParents, commitLabel, subjectMap, subjectOf, rebaseReplayed,
+    runGit, runGitQuiet, gitHead, gitParents, commitLabel, subjectMap, subjectOf, rebaseReplayed,
 } from './gitRun';
 import type { CollectResult, DiffEntry, ReviewConfig } from './types';
 
@@ -166,6 +166,15 @@ export async function collectDiff(
 /** 暂存区改动（普通提交） */
 export function collectStaged(repo: string, cfg: ReviewConfig): Promise<CollectResult> {
     return collectDiff(repo, ['--cached'], undefined, cfg);
+}
+
+/**
+ * 工作区未提交改动（相对 HEAD，含已暂存与未暂存）——「改完但还没提交」时审查用。
+ * 无提交历史（HEAD 不存在）时退回暂存区。
+ */
+export async function collectWorking(repo: string, cfg: ReviewConfig): Promise<CollectResult> {
+    const head = await gitHead(repo);
+    return collectDiff(repo, head ? ['HEAD'] : ['--cached'], undefined, cfg);
 }
 
 /**

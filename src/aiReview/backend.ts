@@ -140,7 +140,12 @@ export interface CliCallResult {
  * 超时会结束整棵进程树（否则 cmd.exe 下的 node 会一直挂着）。
  */
 export function callCli(cliPath: string, prompt: string, cfg: ReviewConfig): Promise<CliCallResult> {
-    const args = ['-p', ...cfg.cliArgs];
+    const args = ['-p'];
+    // 审查固定用较快的模型（默认 deepseek-v4.1-flash）；cliArgs 里已带 --model 时以其为准
+    if (cfg.model && !cfg.cliArgs.includes('--model')) {
+        args.push('--model', cfg.model);
+    }
+    args.push(...cfg.cliArgs);
     const wrapped = wrapWindowsShim(cliPath, args);
     const timeoutMs = Math.max(5, cfg.timeoutSec) * 1000;
     const started = Date.now();

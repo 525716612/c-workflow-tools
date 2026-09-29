@@ -7,9 +7,11 @@
  *
  * 示例：
  *   node dist/cli.js --repo . --scope staged --dry-run
+ *   node dist/cli.js --repo . --scope working --dry-run   （工作区未提交改动，git diff HEAD）
  *   node dist/cli.js --repo . --scope commit --rev HEAD
  *   node dist/cli.js --repo . --scope rebase --old <sha> --new <sha>
  *   node dist/cli.js --repo . --scope staged --cli C:/path/to/codebuddy.cmd --json
+ *   node dist/cli.js --repo . --scope working --model deepseek-v4-pro
  */
 import * as path from 'path';
 import { runReview, preparePrompt, classifyHeadChange, lastAction } from './engine';
@@ -57,6 +59,7 @@ function parseArgs(argv: string[]): CliArgs {
             case '--new': args.newHead = next(); break;
             case '--cli': cfg.cliPath = next(); break;
             case '--cli-args': cfg.cliArgs = next().split(/\s+/).filter(Boolean); break;
+            case '--model': cfg.model = next(); break;
             case '--timeout': cfg.timeoutSec = Number(next()) || cfg.timeoutSec; break;
             case '--max-files': cfg.maxFiles = Number(next()) || cfg.maxFiles; break;
             case '--max-diff-kb': cfg.maxDiffKb = Number(next()) || cfg.maxDiffKb; break;

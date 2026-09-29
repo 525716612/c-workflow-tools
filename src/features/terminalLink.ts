@@ -409,7 +409,8 @@ async function findAllInWorkspace(baseName: string): Promise<vscode.Uri[]> {
 
 /**
  * 对候选文件排序：
- * - 相对路径以目标后缀结尾（如 src/main.c）得分最高 → 构建输出通常保留源相对目录，可唯一锁定正在编译的文件
+ * - 候选相对路径以目标后缀结尾（如 src/main.c）得分最高 → 构建输出通常保留源相对目录，可唯一锁定正在编译的文件
+ * - 目标（打印路径）以候选相对路径结尾（如 Linux 构建打印 /code/proj/src/main.c，工作区相对路径是 src/main.c）
  * - 其次接近终端 cwd（正在编译的目录）优先
  */
 function rankCandidates(
@@ -426,6 +427,10 @@ function rankCandidates(
         let score = 0;
         if (relSuffix && rel.endsWith(relSuffix)) {
             score += 100;
+        } else if (relSuffix && relSuffix.endsWith('/' + rel)) {
+            // 打印的是 Linux/容器构建的绝对路径（/code/proj/...），候选相对路径是它的尾部；
+            // 尾部越长越具体，用它压过其它同名候选
+            score += 100 + Math.min(50, rel.length);
         }
         if (cwdPath) {
             const abs = uri.fsPath.replace(/\\/g, '/').toLowerCase();

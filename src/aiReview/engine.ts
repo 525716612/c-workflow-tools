@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { collectStaged, collectCommit, collectMerge, collectRebase, collectSync } from './diff';
+import { collectStaged, collectWorking, collectCommit, collectMerge, collectRebase, collectSync } from './diff';
 import { loadRules, ensureRulesFile } from './rules';
 import { buildPrompt } from './prompt';
 import { resolveBackend, callCli } from './backend';
@@ -41,6 +41,9 @@ async function collectFor(req: ReviewRequest, reviewed: Set<string> = new Set())
     if (scope === 'staged') {
         return collectStaged(repo, cfg);
     }
+    if (scope === 'working') {
+        return collectWorking(repo, cfg);
+    }
     if (scope === 'commit') {
         return req.rev ? collectCommit(repo, req.rev, cfg) : emptyCollect();
     }
@@ -66,6 +69,8 @@ function emptyReason(scope: ReviewScope): string {
             return '变基重放的提交内容未被改写（解冲突未改动代码）';
         case 'sync':
             return '本次没有带入本分支的提交';
+        case 'working':
+            return '工作区没有未提交的源码改动';
         default:
             return '没有可审查的源码改动（只改了非源码文件或为空）';
     }

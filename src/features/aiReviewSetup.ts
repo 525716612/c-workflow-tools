@@ -35,6 +35,7 @@ export function readConfig(context: vscode.ExtensionContext): ReviewConfig {
         vscode.workspace.getConfiguration('c-workflow-tools').get<T>(key, fallback);
 
     cfg.cliPath = get('aiReview.cliPath', '');
+    cfg.model = get('aiReview.model', cfg.model);
     cfg.timeoutSec = get('aiReview.timeoutSec', cfg.timeoutSec);
     cfg.maxFiles = get('aiReview.maxFiles', cfg.maxFiles);
     cfg.maxDiffKb = get('aiReview.maxDiffKb', cfg.maxDiffKb);
@@ -187,6 +188,7 @@ export async function showAiReviewStatus(context: vscode.ExtensionContext): Prom
     if (gate.cfg.cliPath) {
         lines.push(`   （按设置指定：${gate.cfg.cliPath}）`);
     }
+    lines.push(`审查模型：${gate.cfg.model || '（CLI 默认）'}`);
     lines.push(`工作区 git 仓库：${gate.repos.length > 0 ? gate.repos.map((r) => path.basename(r)).join(', ') : '（无）'}`);
     lines.push(`审查开关：提交=${onOff('aiReview.reviewCommit')} 合并=${onOff('aiReview.reviewMerge')}`
         + ` 变基=${onOff('aiReview.reviewRebase')} 同步=${onOff('aiReview.reviewSync')}`);

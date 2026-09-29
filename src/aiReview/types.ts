@@ -40,7 +40,7 @@ export interface DiffEntry {
 }
 
 /** 审查范围 */
-export type ReviewScope = 'staged' | 'commit' | 'merge' | 'rebase' | 'sync';
+export type ReviewScope = 'staged' | 'commit' | 'merge' | 'rebase' | 'sync' | 'working';
 
 /** 一次审查的输入 */
 export interface CollectResult {
@@ -61,6 +61,8 @@ export interface ReviewConfig {
     cliPath: string;
     /** 传给 CLI 的额外参数（默认 --disallowedTools <deny>） */
     cliArgs: string[];
+    /** 审查使用的模型 ID（传给 CLI 的 --model）；空则用 CLI 默认模型 */
+    model: string;
     /** 单次调用超时（秒） */
     timeoutSec: number;
     maxFiles: number;
@@ -84,6 +86,7 @@ export function defaultConfig(): ReviewConfig {
     return {
         cliPath: '',
         cliArgs: ['--disallowedTools', 'Bash,Write,Edit,Read,Glob,Grep,WebFetch,WebSearch'],
+        model: 'deepseek-v4.1-flash',
         timeoutSec: 600,
         maxFiles: 8,
         maxDiffKb: 60,

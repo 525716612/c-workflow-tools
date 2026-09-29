@@ -8,6 +8,7 @@ import {
     AI_REVIEW_STATUS_COMMAND, AI_REVIEW_CLEAN_LEGACY_COMMAND,
 } from './features/aiReviewSetup';
 import { reviewAndCommit } from './features/aiReviewCommit';
+import { reviewWorkingTree, AI_REVIEW_WORKING_COMMAND } from './features/aiReviewWorking';
 
 /**
  * 命令注册中心（可扩展点）。
@@ -41,6 +42,11 @@ export function registerCommands(context: vscode.ExtensionContext): void {
         // 审查并提交：提交前审暂存区，有问题先拦一下 —— 唯一能拦截的入口
         vscode.commands.registerCommand('c-workflow-tools.aiReviewCommit', () => {
             reviewAndCommit(context);
+        }),
+
+        // 审查未提交改动：工作区相对 HEAD 的改动（已暂存+未暂存），不提交，只出报告
+        vscode.commands.registerCommand(AI_REVIEW_WORKING_COMMAND, () => {
+            reviewWorkingTree(context);
         }),
 
         // 查看启动条件与本机配置（是否找到 CLI、监听哪些仓库、各范围开关）

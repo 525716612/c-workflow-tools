@@ -53,8 +53,12 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
     const repos = new Set<string>();
     const heads = new Map<string, string>();
     const busy = new Set<string>();
-    /** 审查期间又发生了提交：等这次审完再处理最新的一次 */
-    const pending = new Map<string, { from: string; to: string }>();
+    /**
+     * 审查期间又发生的 HEAD 变化：**逐个排队**，按顺序审查。
+     * 不能只保留"最新的一次"——短时间连续提交时，中间提交会被后一次覆盖而永久漏审，
+     * 表现为"第二次提交的审查弹窗显示的仍是第一次提交"。
+     */
+    const pending = new Map<string, Array<{ from: string; to: string }>>();
 
     // 审查期间的状态栏常驻指示：右下角进度通知忙起来容易忽略，状态栏始终可见，
     // 显示「AI 审查中 · 仓库名 · 已耗时」，避免用户忘记有审查在跑、结果弹窗显得"突然"
@@ -67,9 +71,14 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
             return;
         }
         const parts = [...reviewStarts.entries()]
-            .map(([r, t]) => `${path.basename(r)} ${Math.floor((Date.now() - t) / 1000)}s`);
+            .map(([r, t]) => {
+                const queued = pending.get(r)?.length ?? 0;
+                return `${path.basename(r)} ${Math.floor((Date.now() - t) / 1000)}s`
+                    + (queued > 0 ? `（另有 ${queued} 次提交排队）` : '');
+            });
         statusBar.text = `$(sync~spin) AI 审查中 · ${parts.join(' · ')}`;
-        statusBar.tooltip = 'AI 代码审查正在后台运行，结束后会弹出结果';
+        statusBar.tooltip = 'AI 代码审查正在后台运行，结束后会弹出结果；'
+            + '「排队」表示后面还有提交在等待审查，当前弹窗对应的是更早的那次提交';
         statusBar.show();
     }, 1000);
     context.subscriptions.push(statusBar);
@@ -91,7 +100,14 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
 
     const onHeadChanged = async (repo: string, from: string, to: string): Promise<void> => {
         if (busy.has(repo)) {
-            pending.set(repo, { from, to });
+            const queue = pending.get(repo) ?? [];
+            const last = queue[queue.length - 1];
+            if (!last || last.to !== to) {
+                queue.push({ from, to });
+                pending.set(repo, queue);
+                log(`AI 审查：${path.basename(repo)} 检测到新 HEAD ${to.slice(0, 8)}，`
+                    + `当前提交仍在审查，已排队（队列 ${queue.length}）`);
+            }
             return;
         }
         busy.add(repo);
@@ -134,12 +150,18 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
         } finally {
             busy.delete(repo);
             reviewStarts.delete(repo);
-            if (reviewStarts.size === 0) {
+            // 队列里还有等待审查的 HEAD 变化：立刻接着审下一个（逐个审查，不丢提交）
+            const queue = pending.get(repo) ?? [];
+            const next = queue.shift();
+            if (queue.length === 0) {
+                pending.delete(repo);
+            } else {
+                pending.set(repo, queue);
+            }
+            if (reviewStarts.size === 0 && !next) {
                 statusBar.hide();
             }
-            const next = pending.get(repo);
-            pending.delete(repo);
-            if (next && next.to !== to) {
+            if (next) {
                 void onHeadChanged(repo, next.from, next.to);
             }
         }
@@ -199,6 +221,12 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
             if (e.affectsConfiguration('c-workflow-tools.aiReview')) {
                 void refresh().catch((err: Error) => logError(`AI 审查重启失败：${err.message}`));
             }
+        }),
+        // 窗口重新聚焦时，把后台（最小化/失焦）期间完成、只做了非模态提示的结果重新弹出
+        vscode.window.onDidChangeWindowState((state) => {
+            if (state.focused) {
+                void flushMissedOutcomes().catch((e: Error) => logError(`重弹审查结果失败：${e.message}`));
+            }
         })
     );
 }
@@ -206,6 +234,7 @@ export function registerAiReviewWatch(context: vscode.ExtensionContext): void {
 /** 审查范围的中文说明（结果弹窗展示用）；覆盖全部 ReviewScope，索引必命中 */
 const SCOPE_TEXT: Record<ReviewScope, string> = {
     staged: '本地提交（提交前）',
+    working: '未提交改动（工作区）',
     commit: '本地提交',
     merge: '合并',
     rebase: '变基',
@@ -213,9 +242,18 @@ const SCOPE_TEXT: Record<ReviewScope, string> = {
 };
 
 /**
+ * 窗口不在前台（最小化/切走）期间完成的审查结果，聚焦后重新弹出。
+ * 模态框在后台会被漏看，所以先非模态呈现并在这里登记，聚焦时再正式弹。
+ */
+const missedWhileUnfocused: ReviewOutcome[] = [];
+
+/**
  * 弹出审查结果通知（附「打开报告」）。
  * 只有"发现问题"（reviewed）才按 modalResult 决定模态/非模态；
  * 超时/失败（timeout/error）一律右下角通知 —— 审查没做成不值得打断当前操作。
+ *
+ * 窗口不在前台（最小化/失焦）时**强制非模态**：模态框此时会被漏看，而非模态会进
+ * 通知中心（铃铛/任务栏徽标）留下痕迹；同时登记结果，窗口重新聚焦时再正式弹出。
  */
 export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<void> {
     const record = outcome.record;
@@ -226,11 +264,36 @@ export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<v
         log(`AI 审查结果（未弹窗提示）：${outcome.message}`);
         return;
     }
+    if (!vscode.window.state.focused) {
+        if (!missedWhileUnfocused.includes(outcome)) {
+            missedWhileUnfocused.push(outcome);
+        }
+        log(`AI 审查结果（窗口不在前台，先非模态提示，聚焦后重弹）：${outcome.message}`);
+        await presentOutcome(outcome, false);
+        return;
+    }
+    await presentOutcome(outcome, true);
+}
+
+/** 窗口重新聚焦时把后台期间的结果重新弹出（此时才允许模态），确保不漏看 */
+export async function flushMissedOutcomes(): Promise<void> {
+    if (missedWhileUnfocused.length === 0) {
+        return;
+    }
+    const queue = missedWhileUnfocused.splice(0, missedWhileUnfocused.length);
+    for (const outcome of queue) {
+        await presentOutcome(outcome, true);
+    }
+}
+
+/** 实际呈现一条结果；allowModal=false 时强制非模态（后台/最小化时用） */
+async function presentOutcome(outcome: ReviewOutcome, allowModal: boolean): Promise<void> {
+    const record = outcome.record;
     const counts = record.counts ?? {};
     const total = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
     // reviewed 本身意味着"发现问题"（engine 侧 findings 为空时状态是 clean），
     // total>0 是显式兜底：确保模态框只出现在真正有问题时，与注释/配置描述语义一致
-    const modal = record.status === 'reviewed' && total > 0
+    const modal = allowModal && record.status === 'reviewed' && total > 0
         && vscode.workspace.getConfiguration('c-workflow-tools').get<boolean>('aiReview.modalResult', true);
     const countText = Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ');
 

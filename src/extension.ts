@@ -5,6 +5,7 @@ import { registerWorkflowView } from './views/workflowView';
 import { registerSymbolSearchView } from './views/symbolSearchView';
 import { registerTerminalLink } from './features/terminalLink';
 import { registerAiReviewWatch } from './features/aiReviewWatch';
+import { registerAiReviewTool } from './features/aiReviewTool';
 import { promptLegacyCleanupOnce } from './features/aiReviewSetup';
 import { initOutputChannel } from './outputChannel';
 
@@ -33,6 +34,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 注册 AI 审查（引擎在插件内，只依赖 codebuddy CLI；工作区含 git 仓库且找到 CLI 才启动）
     registerAiReviewWatch(context);
+    // 语言模型工具：Copilot 对话里可直接调用「审查未提交改动」
+    registerAiReviewTool(context);
     // 若本机还装着旧的 Python 钩子，会与插件重复审查，提示一次并给一键清理
     void promptLegacyCleanupOnce(context);
 }

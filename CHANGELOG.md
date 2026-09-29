@@ -2,6 +2,26 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.1.10] - 2026-09-29
+
+### Fixed
+
+- 修复：短时间连续提交时，事后审查的待处理队列只保留"最后一次" HEAD 变化，中间那次提交会被覆盖、永久漏审（表现为"第二次提交的审查弹窗/报告显示的仍是第一次提交"）。现改为**逐个排队**、按顺序审查，每次提交都用它自己的 commit 标签出结果；状态栏同时显示「另有 N 次提交排队」
+- 修复：终端 Ctrl+点击 **Linux/容器构建打印的路径**（如 `/code/HKC_6315B_Series/user/.../hv_app_Function.c:89:29`，本机实际在 `E:\Desktop\hkc_6315b_series\...`）无法跳转。工作区搜索原只做"候选相对路径以打印路径结尾"的匹配，而这里是反过来的；现补上反向匹配（打印路径以候选相对路径结尾），多同名候选也能唯一命中
+- 修复：`working`（未提交改动）审查在无提交历史的仓库下退回暂存区，避免 `git diff HEAD` 报错
+
+### Added
+
+- 新增：AI 审查**固定使用较快的模型**（默认 `deepseek-v4.1-flash`，即 codebuddy CLI 的 `--model deepseek-v4.1-flash`）。新增设置 `c-workflow-tools.aiReview.model`（可改为 `deepseek-v4-pro`、`glm-5.3-flash` 等），CLI 端新增 `--model` 参数；`AI 审查状态` 面板显示当前模型
+- 新增审查范围「**工作区未提交改动**」（`git diff HEAD`，含已暂存 + 未暂存）——"改完但还没提交"时先审一遍：
+  - 新命令 `C Workflow: AI 审查未提交改动`
+  - CLI：`node dist/cli.js --repo . --scope working`（`--scope working --dry-run` 可预览收集范围）
+- 新增**给 Copilot 的语言模型工具** `c-workflow-tools_reviewUncommitted`（`#reviewUncommittedChanges`）：Copilot 在对话里可直接调用，返回未提交改动的问题清单（级别、文件:行号、问题、建议）
+
+### Changed
+
+- 优化审查结果弹窗在**窗口最小化/失焦**时的表现：此时**强制非模态**（模态框在后台会被漏看，非模态会进通知中心，铃铛/任务栏徽标留痕），并把结果登记下来；**窗口重新聚焦时再正式弹出**（此时才允许模态），避免在后台错过审查结果
+
 ## [0.1.9] - 2026-09-20
 
 ### Added

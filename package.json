@@ -3,7 +3,7 @@
   "displayName": "C Workflow Tools",
   "description": "（个人自用）C/C++ 工程与 Git 工作流定制工具：C 宏块快捷选中、全局符号搜索、Git 任意两节点 difftool 对比、打包两节点间差异文件（修改前/修改后）.",
   "publisher": "cxy",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -41,6 +41,7 @@
     "onCommand:c-workflow-tools.packageDiff",
     "onCommand:c-workflow-tools.diagnoseSymbolSearch",
     "onCommand:c-workflow-tools.aiReviewCommit",
+    "onCommand:c-workflow-tools.aiReviewWorking",
     "onCommand:c-workflow-tools.aiReviewStatus",
     "onCommand:c-workflow-tools.aiReviewCleanLegacy"
   ],
@@ -70,6 +71,11 @@
       {
         "command": "c-workflow-tools.aiReviewCommit",
         "title": "C Workflow: AI 审查并提交（提交前审查暂存区）",
+        "category": "C Workflow"
+      },
+      {
+        "command": "c-workflow-tools.aiReviewWorking",
+        "title": "C Workflow: AI 审查未提交改动（工作区 vs HEAD）",
         "category": "C Workflow"
       },
       {
@@ -114,6 +120,26 @@
         "when": "editorTextFocus"
       }
     ],
+    "languageModelTools": [
+      {
+        "name": "c-workflow-tools_reviewUncommitted",
+        "displayName": "审查未提交改动（AI 代码审查）",
+        "toolReferenceName": "reviewUncommittedChanges",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(git-compare)",
+        "modelDescription": "用本机 codebuddy AI 审查当前 git 仓库工作区中尚未提交的改动（相对 HEAD，含已暂存与未暂存），返回问题清单（级别、文件:行号、问题、建议）。当用户要求审查、检查、review 刚改完还没提交的代码时调用它。",
+        "userDescription": "用 AI（codebuddy）审查当前未提交的改动并给出问题清单。",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "repo": {
+              "type": "string",
+              "description": "可选：git 仓库根目录绝对路径。省略则用当前打开文件所在仓库。"
+            }
+          }
+        }
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -150,6 +176,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "`codebuddy` CLI 路径。留空则自动在 PATH 中查找 `codebuddy` / `cbc`。"
+        },
+        "c-workflow-tools.aiReview.model": {
+          "type": "string",
+          "default": "deepseek-v4.1-flash",
+          "markdownDescription": "审查使用的模型 ID（作为 `codebuddy --model` 传入）。默认 `deepseek-v4.1-flash`（速度快）；可换成 `deepseek-v4-pro`、`glm-5.3-flash` 等。留空则用 CLI 默认模型。"
         },
         "c-workflow-tools.aiReview.reviewCommit": {
           "type": "boolean",
