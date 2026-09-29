@@ -226,13 +226,15 @@ function finishEmpty(
     reason: string,
     collected: CollectResult
 ): ReviewOutcome {
+    // 跳过原因带上收集说明：例如「只有未跟踪新文件」时，提示"如需审查请先 git add"要能被看到
+    const detail = [reason, ...collected.notes].filter(Boolean).join('；');
     const record = buildRecord({
-        repo: path.basename(repo), scope, head, status: 'skipped', detail: reason, meta,
+        repo: path.basename(repo), scope, head, status: 'skipped', detail, meta,
     });
     const report = renderUnreviewedReport(meta, reason, collected.entries, collected.skipped);
     const reportPath = writeArtifacts(stateDir, record, report);
-    const text = `[ai-review] ${reason}`;
-    return { status: 'skipped', record, report, text, reportPath, blockingCount: 0, message: reason };
+    const text = `[ai-review] ${detail}`;
+    return { status: 'skipped', record, report, text, reportPath, blockingCount: 0, message: detail };
 }
 
 // ---------------------------------------------------------------------------

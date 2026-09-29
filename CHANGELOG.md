@@ -2,6 +2,20 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.1.11] - 2026-09-29
+
+### Fixed
+
+- 修复：「AI 审查未提交改动」（`working` 范围）会**静默漏掉未跟踪的新文件**。现给出明确提示「另有 N 个可审查的未跟踪新文件未纳入审查（如需审查请先 git add）」，并**不自动读取、不外发**未跟踪文件内容——未跟踪文件常是刻意不入库的本地密钥/凭据，避免整篇发送到远端模型；跳过原因（`skipped` 记录）也带上该说明，只有未跟踪文件时同样可见
+- 修复：失焦期间登记「待重弹的审查结果」改到 `await` 之前完成。非模态通知的 Promise 要等用户关闭才 settle，原顺序（先 await 再登记）在用户不理会通知时会漏登记，导致"聚焦后重弹"失效
+- 修复：`flushMissedOutcomes` 增加重入保护，避免窗口切走再切回时并发弹出多个模态框；登记条件与"是否用模态"解耦（`aiReview.modalResult=false` 时"发现问题"的结果也会重弹）
+- 修复：跳过（`skipped`）记录的说明带上收集信息，避免"提示已生成却看不到"
+
+### Changed
+
+- 删除未被任何入口调用、且会绕过 AI 审查总开关的 `runWorkingReview`
+- git 调用统一加 `--literal-pathspecs`：文件名里的 `*` `?` `[` 或 `:` 前缀不再被当作 glob / pathspec 魔法
+
 ## [0.1.10] - 2026-09-29
 
 ### Fixed

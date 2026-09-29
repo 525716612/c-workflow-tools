@@ -10,8 +10,14 @@ import { killProcessTree } from '../utils/proc';
  * 一旦引入 vscode 模块，独立运行时会因 require('vscode') 失败而崩。
  */
 
-/** git 选项：禁用分页/颜色，路径不做引号转义（便于解析） */
-const GIT_OPTS = ['-c', 'core.quotepath=false', '-c', 'core.pager=cat', '-c', 'color.ui=false'];
+/** git 选项：禁用分页/颜色，路径不做引号转义（便于解析），路径按字面量处理 */
+const GIT_OPTS = [
+    // --literal-pathspecs：文件名里的 * ? [ 或 : 前缀不会被当 glob/pathspec 魔法
+    '--literal-pathspecs',
+    '-c', 'core.quotepath=false',
+    '-c', 'core.pager=cat',
+    '-c', 'color.ui=false',
+];
 
 /**
  * 执行 git 并返回 stdout（去掉尾部空白）。

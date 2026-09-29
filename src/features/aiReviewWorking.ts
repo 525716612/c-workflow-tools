@@ -4,7 +4,6 @@ import { evaluateGate } from './aiReviewSetup';
 import { runReview } from '../aiReview/engine';
 import { showOutcomeNotification } from './aiReviewWatch';
 import { getGitWorkingDir, findGitRoot } from '../utils/git';
-import type { ReviewOutcome } from '../aiReview/types';
 import { log } from '../outputChannel';
 
 export const AI_REVIEW_WORKING_COMMAND = 'c-workflow-tools.aiReviewWorking';
@@ -17,18 +16,6 @@ export function resolveReviewRepo(explicit?: string): string | undefined {
         return findGitRoot(explicit.trim());
     }
     return getGitWorkingDir();
-}
-
-/**
- * 审查工作区未提交改动（相对 HEAD，含已暂存与未暂存），只返回结果、不弹窗也不提交。
- * 供命令与语言模型工具复用。
- */
-export async function runWorkingReview(
-    context: vscode.ExtensionContext,
-    repo: string,
-): Promise<ReviewOutcome> {
-    const gate = evaluateGate(context);
-    return runReview({ repo, scope: 'working', cfg: gate.cfg });
 }
 
 /**
@@ -55,5 +42,10 @@ export async function reviewWorkingTree(context: vscode.ExtensionContext): Promi
         () => runReview({ repo, scope: 'working', cfg: gate.cfg })
     );
     log(`AI 审查未提交改动：${outcome.record.status_text}（${outcome.message}）`);
+    if (outcome.status === 'skipped') {
+        // 用户主动发起：把"没有可审内容/未跟踪需 git add"等说明直接告诉他（showOutcomeNotification 对 skipped 不打扰）
+        vscode.window.showInformationMessage(`AI 审查未提交改动：${outcome.message}`);
+        return;
+    }
     await showOutcomeNotification(outcome);
 }

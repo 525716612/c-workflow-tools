@@ -4,7 +4,7 @@ import * as path from 'path';
 import { evaluateGate } from './aiReviewSetup';
 import { gitLastAction, runGitQuiet, gitHead, gitCommonDir } from '../aiReview/gitRun';
 import { classifyHeadChange, runReview } from '../aiReview/engine';
-import type { ReviewOutcome, ReviewScope } from '../aiReview/types';
+import type { ReviewOutcome, ReviewScope, ReviewStatusRecord } from '../aiReview/types';
 import { log, logError } from '../outputChannel';
 
 /**
@@ -243,9 +243,24 @@ const SCOPE_TEXT: Record<ReviewScope, string> = {
 
 /**
  * 窗口不在前台（最小化/切走）期间完成的审查结果，聚焦后重新弹出。
- * 模态框在后台会被漏看，所以先非模态呈现并在这里登记，聚焦时再正式弹。
+ * 只登记"审出问题"（reviewed 且有 findings）的结果；超时/失败/无问题已用非模态留痕，不再重弹。
  */
 const missedWhileUnfocused: ReviewOutcome[] = [];
+
+/** 失焦期间暂存、待聚焦后重弹的结果上限（避免积压一堆模态框打断操作） */
+const MAX_MISSED = 3;
+
+/** 是否审出了问题（reviewed 且有 findings）——登记重弹只看这个，与"是否用模态"解耦 */
+function hasProblems(record: ReviewStatusRecord): boolean {
+    const total = Object.values(record.counts ?? {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+    return record.status === 'reviewed' && total > 0;
+}
+
+/** 该结果是否会用模态弹出（有问题且启用 modalResult） */
+function isModalWorthy(record: ReviewStatusRecord): boolean {
+    return hasProblems(record)
+        && vscode.workspace.getConfiguration('c-workflow-tools').get<boolean>('aiReview.modalResult', true);
+}
 
 /**
  * 弹出审查结果通知（附「打开报告」）。
@@ -253,7 +268,7 @@ const missedWhileUnfocused: ReviewOutcome[] = [];
  * 超时/失败（timeout/error）一律右下角通知 —— 审查没做成不值得打断当前操作。
  *
  * 窗口不在前台（最小化/失焦）时**强制非模态**：模态框此时会被漏看，而非模态会进
- * 通知中心（铃铛/任务栏徽标）留下痕迹；同时登记结果，窗口重新聚焦时再正式弹出。
+ * 通知中心（铃铛/任务栏徽标）留下痕迹；只有"发现问题"的结果才登记，聚焦后再正式弹出。
  */
 export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<void> {
     const record = outcome.record;
@@ -265,24 +280,41 @@ export async function showOutcomeNotification(outcome: ReviewOutcome): Promise<v
         return;
     }
     if (!vscode.window.state.focused) {
-        if (!missedWhileUnfocused.includes(outcome)) {
+        // 先同步登记（不依赖 await）：非模态通知要等用户关闭才 settle，晚登记会漏掉重弹。
+        // 每个 outcome 只会投递一次，无需按引用去重
+        if (hasProblems(record)) {
             missedWhileUnfocused.push(outcome);
+            if (missedWhileUnfocused.length > MAX_MISSED) {
+                const dropped = missedWhileUnfocused.splice(0, missedWhileUnfocused.length - MAX_MISSED);
+                log(`AI 审查：后台积压结果超过 ${MAX_MISSED} 条，折叠较早的 ${dropped.length} 条（均已在通知中心留痕）`);
+            }
         }
-        log(`AI 审查结果（窗口不在前台，先非模态提示，聚焦后重弹）：${outcome.message}`);
+        log(`AI 审查结果（窗口不在前台，先非模态提示）：${outcome.message}`);
         await presentOutcome(outcome, false);
         return;
     }
     await presentOutcome(outcome, true);
 }
 
-/** 窗口重新聚焦时把后台期间的结果重新弹出（此时才允许模态），确保不漏看 */
+/** 窗口重新聚焦时把后台登记的结果逐条重弹；中途用户又切走则保留剩余项，等下次聚焦 */
+let flushingMissed = false;
 export async function flushMissedOutcomes(): Promise<void> {
-    if (missedWhileUnfocused.length === 0) {
-        return;
+    if (flushingMissed) {
+        return; // 已有一次在跑：避免切走再切回时并发弹多个模态
     }
-    const queue = missedWhileUnfocused.splice(0, missedWhileUnfocused.length);
-    for (const outcome of queue) {
-        await presentOutcome(outcome, true);
+    flushingMissed = true;
+    try {
+        while (missedWhileUnfocused.length > 0) {
+            if (!vscode.window.state.focused) {
+                return; // 用户又切走了，剩余项留到下次聚焦
+            }
+            const outcome = missedWhileUnfocused.shift();
+            if (outcome) {
+                await presentOutcome(outcome, true);
+            }
+        }
+    } finally {
+        flushingMissed = false;
     }
 }
 
@@ -291,10 +323,8 @@ async function presentOutcome(outcome: ReviewOutcome, allowModal: boolean): Prom
     const record = outcome.record;
     const counts = record.counts ?? {};
     const total = Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
-    // reviewed 本身意味着"发现问题"（engine 侧 findings 为空时状态是 clean），
-    // total>0 是显式兜底：确保模态框只出现在真正有问题时，与注释/配置描述语义一致
-    const modal = allowModal && record.status === 'reviewed' && total > 0
-        && vscode.workspace.getConfiguration('c-workflow-tools').get<boolean>('aiReview.modalResult', true);
+    // 模态判定与 isModalWorthy 共用同一口径，避免"登记了却不弹/弹了却不登记"
+    const modal = allowModal && isModalWorthy(record);
     const countText = Object.entries(counts).map(([k, v]) => `${k}:${v}`).join(' ');
 
     // 弹窗标题自证身份：审查完成顺序与提交顺序可能不一致（耗时不同/多仓库并行），

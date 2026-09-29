@@ -170,11 +170,24 @@ export function collectStaged(repo: string, cfg: ReviewConfig): Promise<CollectR
 
 /**
  * 工作区未提交改动（相对 HEAD，含已暂存与未暂存）——「改完但还没提交」时审查用。
- * 无提交历史（HEAD 不存在）时退回暂存区。
+ *
+ * `git diff HEAD` 不含**未跟踪的新文件**。这里**不**自动读取它们外发（未跟踪文件常是
+ * 刻意不入库的本地密钥/凭据，送到远端模型有泄露风险），只给一条提示；需要审查新文件时
+ * 先 `git add`（暂存后即进入本范围）。无提交历史（HEAD 不存在）时退回暂存区。
  */
 export async function collectWorking(repo: string, cfg: ReviewConfig): Promise<CollectResult> {
     const head = await gitHead(repo);
-    return collectDiff(repo, head ? ['HEAD'] : ['--cached'], undefined, cfg);
+    const result = await collectDiff(repo, head ? ['HEAD'] : ['--cached'], undefined, cfg);
+
+    const untracked = (await runGitQuiet(['ls-files', '--others', '--exclude-standard', '-z'], repo))
+        .split('\0')
+        .filter((n) => n !== '')
+        .filter(isReviewable);
+    if (untracked.length > 0) {
+        // 只报数量、不带文件名：文件名同样会随 notes 进入发给远端模型的 prompt
+        result.notes.push(`另有 ${untracked.length} 个可审查的未跟踪新文件未纳入审查（如需审查请先 git add）`);
+    }
+    return result;
 }
 
 /**
