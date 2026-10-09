@@ -255,6 +255,8 @@ export interface ArtifactPaths {
     statusFile: string;
     reportFile: string;
     historyFile: string;
+    /** 每次审查的报告快照目录（文件名含时间+提交，指向"那一次"的报告） */
+    reportsDir: string;
 }
 
 /** 组装产物路径（<git-dir>/ai-review/） */
@@ -264,6 +266,7 @@ export function artifactPaths(stateDir: string): ArtifactPaths {
         statusFile: path.join(stateDir, 'last-status.json'),
         reportFile: path.join(stateDir, 'last-report.md'),
         historyFile: path.join(stateDir, 'history.log'),
+        reportsDir: path.join(stateDir, 'reports'),
     };
 }
 
@@ -312,7 +315,60 @@ export function markReviewedCommits(stateDir: string, shas: string[]): void {
     }
 }
 
-/** 写 last-status.json / last-report.md / history.log（任何一步失败都不影响审查结论） */
+// ---------------------------------------------------------------------------
+// 报告快照（每次审查一份独立文件）
+// ---------------------------------------------------------------------------
+
+/** 报告快照最多保留的份数（超出删最旧的，避免目录无限增长） */
+const MAX_REPORT_SNAPSHOTS = 20;
+
+/** 快照文件名时间戳（本地时间、可排序、文件名安全），如 2026-10-09_16-36-18-123 */
+function snapshotStamp(d = new Date()): string {
+    const p = (n: number, w = 2): string => String(n).padStart(w, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+        + `_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}-${p(d.getMilliseconds(), 3)}`;
+}
+
+/** 快照文件名里的提交标识（短 sha；无提交历史时用占位符） */
+function snapshotHeadTag(head: string): string {
+    const tag = (head || '').replace(/[^0-9a-zA-Z-]/g, '').slice(0, 8);
+    return tag || 'nohead';
+}
+
+/** 只保留最近 MAX_REPORT_SNAPSHOTS 份快照（文件名内嵌时间，按名排序即按时间排序） */
+function pruneReportSnapshots(dir: string): void {
+    let names: string[];
+    try {
+        names = fs.readdirSync(dir).filter((n) => /^report-.*\.md$/.test(n)).sort();
+    } catch {
+        return;
+    }
+    for (let i = 0; i < names.length - MAX_REPORT_SNAPSHOTS; i++) {
+        try {
+            fs.unlinkSync(path.join(dir, names[i]));
+        } catch {
+            // 删不掉就算了，不影响本次结果
+        }
+    }
+}
+
+/**
+ * 解析「打开报告」实际要打开的文件。
+ *
+ * 首选本次审查的快照；缺失（写失败等）时回退到「最新报告」last-report.md。
+ * 快照固定在 <stateDir>/reports/ 下，last-report.md 固定在 <stateDir> 根。
+ */
+export function resolveOpenableReportPath(reportPath: string): string {
+    if (reportPath && fs.existsSync(reportPath)) {
+        return reportPath;
+    }
+    const dir = reportPath ? path.dirname(reportPath) : '';
+    const stateDir = path.basename(dir) === 'reports' ? path.dirname(dir) : dir;
+    const latest = stateDir ? path.join(stateDir, 'last-report.md') : '';
+    return latest && fs.existsSync(latest) ? latest : '';
+}
+
+/** 写 last-status.json / 报告 / history.log（任何一步失败都不影响审查结论） */
 export function writeArtifacts(stateDir: string, record: ReviewStatusRecord, report: string): string {
     const files = artifactPaths(stateDir);
     let reportPath = '';
@@ -327,9 +383,27 @@ export function writeArtifacts(stateDir: string, record: ReviewStatusRecord, rep
         // 状态写不了也要继续
     }
     if (report) {
+        // 每次审查写一份独立快照（文件名含时间+提交），「打开报告」指向它。
+        // 不能只靠覆盖写 last-report.md：VS Code 的 markdown 预览对"已打开却被
+        // 覆盖的同一文件"不会刷新（microsoft/vscode#265277），预览复用同一个 URI
+        // 会一直停在第一次的内容上 —— 表现为"打开的报告总是过期的"。
+        try {
+            fs.mkdirSync(files.reportsDir, { recursive: true });
+            const snapshot = path.join(
+                files.reportsDir,
+                `report-${snapshotStamp()}-${snapshotHeadTag(record.head)}.md`
+            );
+            fs.writeFileSync(snapshot, report, 'utf8');
+            reportPath = snapshot;
+            pruneReportSnapshots(files.reportsDir);
+        } catch {
+            // 快照写不了不影响其余产物
+        }
         try {
             fs.writeFileSync(files.reportFile, report, 'utf8');
-            reportPath = files.reportFile;
+            if (!reportPath) {
+                reportPath = files.reportFile; // 快照写失败时至少能打开最新那份
+            }
         } catch {
             // 报告写不了不影响弹窗
         }

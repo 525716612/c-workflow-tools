@@ -2,6 +2,16 @@
 
 All notable changes to the "c-workflow-tools" extension will be documented in this file.
 
+## [0.1.12] - 2026-10-09
+
+### Fixed
+
+- 修复：**打开的报告总是过期的，一直停在第一次审查的内容上**。根因是 `last-report.md` 为覆盖写的单一文件，而 VS Code 的 markdown 预览对"已打开却被覆盖的同一文件"不会刷新（上游已知问题 microsoft/vscode#265277）——第一次打开预览后，文件在磁盘上每次都有被正确覆盖（`last-status.json`/`history.log` 可证），但预览复用同一个 URI，展示的一直是缓存的旧内容。现改为：
+  - **每次审查写一份独立报告快照** `<git-dir>/ai-review/reports/report-<时间>-<短sha>.md`，文件名自证对应哪一次审查；通知里的「打开报告」指向本次快照，新文件每次全新打开预览，不再复用旧内容（多仓库/连续提交时弹窗与报告一一对应，也不会再互相覆盖）
+  - `last-report.md` 保留为"最新一份"兼容产物（CLI 输出、状态检查等既有用法不变）；仅当本次快照写失败时回退打开它
+  - 快照目录最多保留最近 20 份，超出自动清理最旧的
+  - 顺带修复「打开报告」回退逻辑里 `reportPath` 为空时会用空路径构造 URI 的问题
+
 ## [0.1.11] - 2026-09-29
 
 ### Fixed

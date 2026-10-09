@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
 import { evaluateGate } from './aiReviewSetup';
 import { gitLastAction, runGitQuiet, gitHead, gitCommonDir } from '../aiReview/gitRun';
 import { classifyHeadChange, runReview } from '../aiReview/engine';
+import { resolveOpenableReportPath } from '../aiReview/report';
 import type { ReviewOutcome, ReviewScope, ReviewStatusRecord } from '../aiReview/types';
 import { log, logError } from '../outputChannel';
 
@@ -370,13 +370,11 @@ async function presentOutcome(outcome: ReviewOutcome, allowModal: boolean): Prom
 
 /** 打开审查报告（Markdown 预览，失败退回普通文本） */
 export async function openReport(outcome: ReviewOutcome): Promise<void> {
-    const reportPath = outcome.reportPath;
-    if (!reportPath || !fs.existsSync(reportPath)) {
-        const stateDir = path.dirname(reportPath || '');
-        if (!stateDir || !fs.existsSync(path.join(stateDir, 'last-report.md'))) {
-            vscode.window.showWarningMessage('没有找到审查报告文件');
-            return;
-        }
+    // 首选本次审查的报告快照；缺失时回退到「最新报告」last-report.md
+    const reportPath = resolveOpenableReportPath(outcome.reportPath);
+    if (!reportPath) {
+        vscode.window.showWarningMessage('没有找到审查报告文件');
+        return;
     }
     const uri = vscode.Uri.file(reportPath);
     try {
